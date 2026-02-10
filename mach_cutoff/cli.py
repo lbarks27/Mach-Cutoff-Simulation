@@ -56,38 +56,47 @@ def main(argv=None):
 
     generated = {}
 
-    if cfg.visualization.enable_matplotlib and not args.skip_matplotlib:
-        try:
-            generated["matplotlib"] = render_matplotlib_bundle(
+    backend_runners = {
+        "matplotlib": (
+            cfg.visualization.enable_matplotlib and not args.skip_matplotlib,
+            lambda: render_matplotlib_bundle(
                 result,
                 output_dir,
                 make_animation=(cfg.visualization.make_animation and not args.no_animation),
                 show_window=args.interactive,
-            )
-        except Exception as exc:
-            print(f"[warn] matplotlib backend failed: {exc}")
-
-    if cfg.visualization.enable_plotly and not args.skip_plotly:
-        try:
-            generated["plotly"] = render_plotly_bundle(
+            ),
+        ),
+        "plotly": (
+            cfg.visualization.enable_plotly and not args.skip_plotly,
+            lambda: render_plotly_bundle(
                 result,
                 output_dir,
                 write_html=cfg.visualization.write_html,
                 open_browser=args.interactive,
-            )
-        except Exception as exc:
-            print(f"[warn] plotly backend failed: {exc}")
-
-    if cfg.visualization.enable_pyvista and not args.skip_pyvista:
-        try:
-            generated["pyvista"] = render_pyvista_bundle(
+            ),
+        ),
+        "pyvista": (
+            cfg.visualization.enable_pyvista and not args.skip_pyvista,
+            lambda: render_pyvista_bundle(
                 result,
                 output_dir,
                 make_animation=(cfg.visualization.make_animation and not args.no_animation),
                 show_window=args.interactive,
-            )
+            ),
+        ),
+    }
+
+    # Matplotlib window display is blocking; run it last in interactive mode.
+    run_order = ["plotly", "pyvista", "matplotlib"] if args.interactive else ["matplotlib", "plotly", "pyvista"]
+
+    for name in run_order:
+        enabled, runner = backend_runners[name]
+        if not enabled:
+            continue
+        try:
+            generated[name] = runner()
         except Exception as exc:
-            print(f"[warn] pyvista backend failed: {exc}")
+            print(f"[warn] {name} backend failed: {exc}")
 
     if generated:
         print("[done] generated visual outputs:")

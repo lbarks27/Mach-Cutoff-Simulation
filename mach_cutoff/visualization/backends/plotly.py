@@ -95,7 +95,9 @@ def render_plotly_bundle(
         if open_browser:
             import webbrowser
 
-            webbrowser.open(p3d.resolve().as_uri())
+            opened = webbrowser.open_new_tab(p3d.resolve().as_uri())
+            if not opened:
+                fig3d.show(renderer="browser")
     elif open_browser:
         fig3d.show()
 
