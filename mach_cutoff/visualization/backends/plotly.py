@@ -7,6 +7,7 @@ from pathlib import Path
 import numpy as np
 
 from ...simulation.outputs import SimulationResult
+from ..terrain import downsample_terrain_grid, terrain_grid_from_result
 
 
 def render_plotly_bundle(
@@ -28,9 +29,29 @@ def render_plotly_bundle(
     flight_lats = [e.aircraft_lat_deg for e in result.emissions]
     flight_lons = [e.aircraft_lon_deg for e in result.emissions]
     flight_alt = [e.aircraft_alt_m for e in result.emissions]
+    terrain_3d = None
+    terrain_2d = None
+    terrain_grid = terrain_grid_from_result(result)
+    if terrain_grid is not None:
+        terrain_3d = downsample_terrain_grid(*terrain_grid, max_points_per_axis=120)
+        terrain_2d = downsample_terrain_grid(*terrain_grid, max_points_per_axis=180)
 
     # 3D figure
     fig3d = go.Figure()
+    if terrain_3d is not None:
+        t_lat, t_lon, t_elev = terrain_3d
+        fig3d.add_trace(
+            go.Surface(
+                x=t_lon,
+                y=t_lat,
+                z=t_elev,
+                colorscale="Earth",
+                opacity=0.55,
+                name="Terrain",
+                showscale=True,
+                colorbar=dict(title="Terrain (m MSL)"),
+            )
+        )
     fig3d.add_trace(
         go.Scatter3d(
             x=flight_lons,
@@ -74,6 +95,25 @@ def render_plotly_bundle(
     # Ground hits
     lat_hits, lon_hits, _ = result.all_ground_hits()
     fig2d = go.Figure()
+    if terrain_2d is not None:
+        t_lat2, t_lon2, t_elev2 = terrain_2d
+        fig2d.add_trace(
+            go.Scattergl(
+                x=t_lon2.ravel(),
+                y=t_lat2.ravel(),
+                mode="markers",
+                marker=dict(
+                    size=3,
+                    opacity=0.45,
+                    color=t_elev2.ravel(),
+                    colorscale="Earth",
+                    showscale=True,
+                    colorbar=dict(title="Terrain (m MSL)"),
+                ),
+                name="Terrain",
+                hoverinfo="skip",
+            )
+        )
     fig2d.add_trace(
         go.Scatter(
             x=flight_lons,

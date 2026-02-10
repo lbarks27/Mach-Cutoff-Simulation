@@ -7,6 +7,7 @@ from pathlib import Path
 import numpy as np
 
 from ...simulation.outputs import SimulationResult
+from ..terrain import downsample_terrain_grid, terrain_grid_from_result
 
 
 def render_matplotlib_bundle(
@@ -34,6 +35,22 @@ def render_matplotlib_bundle(
     flight_lons = [e.aircraft_lon_deg for e in result.emissions]
     flight_alt_km = [e.aircraft_alt_m / 1000.0 for e in result.emissions]
 
+    terrain_3d = None
+    terrain_2d = None
+    terrain_grid = terrain_grid_from_result(result)
+    if terrain_grid is not None:
+        terrain_3d = downsample_terrain_grid(*terrain_grid, max_points_per_axis=120)
+        terrain_2d = downsample_terrain_grid(*terrain_grid, max_points_per_axis=180)
+
+    terrain_min_km = 0.0
+    terrain_max_km = 0.0
+    if terrain_3d is not None:
+        t_lat, t_lon, t_elev = terrain_3d
+        terrain_km = t_elev / 1000.0
+        terrain_min_km = float(np.min(terrain_km))
+        terrain_max_km = float(np.max(terrain_km))
+        ax.plot_surface(t_lon, t_lat, terrain_km, cmap="terrain", linewidth=0, antialiased=False, alpha=0.5)
+
     ax.plot(flight_lons, flight_lats, flight_alt_km, color="black", linewidth=2.0, label="Flight")
 
     for emission in result.emissions:
@@ -46,6 +63,8 @@ def render_matplotlib_bundle(
     ax.set_zlabel("Altitude (km)")
     ax.set_title("Mach Cutoff: 3D Flight + Ray Propagation")
     ax.legend(loc="upper left")
+    if flight_alt_km:
+        ax.set_zlim(min(terrain_min_km, 0.0) - 0.2, max(max(flight_alt_km), terrain_max_km) + 5.0)
 
     p3d = out_dir / "matplotlib_3d.png"
     fig.tight_layout()
@@ -56,6 +75,11 @@ def render_matplotlib_bundle(
     # Ground-hit map
     fig2, ax2 = plt.subplots(figsize=(10, 6))
     lat_hits, lon_hits, _ = result.all_ground_hits()
+    if terrain_2d is not None:
+        t_lat2, t_lon2, t_elev2 = terrain_2d
+        terrain_plot = ax2.contourf(t_lon2, t_lat2, t_elev2, levels=28, cmap="terrain", alpha=0.5)
+        cbar = fig2.colorbar(terrain_plot, ax=ax2, pad=0.02, fraction=0.05)
+        cbar.set_label("Terrain elevation (m MSL)")
     if lat_hits.size:
         ax2.scatter(lon_hits, lat_hits, s=8, alpha=0.6, c="crimson", label="Sonic boom ground hits")
     ax2.plot(flight_lons, flight_lats, color="black", linewidth=1.5, label="Flight track")
@@ -102,9 +126,21 @@ def render_matplotlib_bundle(
         lat_max = max(flight_lats)
         alt_max = max(flight_alt_km)
 
+        terrain_anim_min_km = 0.0
+        if terrain_3d is not None:
+            t_lat, t_lon, t_elev = terrain_3d
+            terrain_km = t_elev / 1000.0
+            terrain_anim_min_km = float(np.min(terrain_km))
+            lon_min = min(lon_min, float(np.min(t_lon)))
+            lon_max = max(lon_max, float(np.max(t_lon)))
+            lat_min = min(lat_min, float(np.min(t_lat)))
+            lat_max = max(lat_max, float(np.max(t_lat)))
+            alt_max = max(alt_max, float(np.max(terrain_km)))
+            ax4.plot_surface(t_lon, t_lat, terrain_km, cmap="terrain", linewidth=0, antialiased=False, alpha=0.5)
+
         ax4.set_xlim(lon_min - 0.5, lon_max + 0.5)
         ax4.set_ylim(lat_min - 0.5, lat_max + 0.5)
-        ax4.set_zlim(0.0, alt_max + 5.0)
+        ax4.set_zlim(min(terrain_anim_min_km, 0.0) - 0.2, alt_max + 5.0)
 
         flight_line, = ax4.plot([], [], [], color="black", linewidth=2.0)
         ray_lines = [ax4.plot([], [], [], color="#1f77b4", alpha=0.4, linewidth=0.8)[0] for _ in range(max_rays_per_emission)]

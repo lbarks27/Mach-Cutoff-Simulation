@@ -34,6 +34,9 @@ class EmissionResult:
 class SimulationResult:
     emissions: list[EmissionResult]
     config_dict: dict
+    terrain_lat_deg: np.ndarray | None = None
+    terrain_lon_deg: np.ndarray | None = None
+    terrain_elevation_m: np.ndarray | None = None
 
     def all_ground_hits(self):
         lats = []

@@ -47,6 +47,23 @@ def _nearest_snapshot_time(snapshot_times: list[datetime], t: datetime) -> datet
     return snapshot_times[idx]
 
 
+def _terrain_from_snapshot(snapshot):
+    lat = np.asarray(snapshot.lat_deg, dtype=np.float32)
+    lon = np.asarray(snapshot.lon_deg, dtype=np.float32)
+    gh = np.asarray(snapshot.geopotential_height_m, dtype=np.float32)
+
+    if gh.ndim != 3 or lat.shape != lon.shape or gh.shape[1:] != lat.shape:
+        return None
+
+    terrain = np.nanmin(gh, axis=0).astype(np.float32)
+    finite = np.isfinite(terrain)
+    if not np.any(finite):
+        return None
+    if not np.all(finite):
+        terrain = np.where(finite, terrain, np.nanmedian(terrain[finite])).astype(np.float32)
+    return lat, lon, terrain
+
+
 class MachCutoffSimulator:
     def __init__(self, config: ExperimentConfig):
         self.config = config
@@ -74,6 +91,13 @@ class MachCutoffSimulator:
         if not snapshots_by_time:
             raise RuntimeError("No HRRR snapshots were loaded for the requested emission times")
         snapshot_times = list(snapshots_by_time.keys())
+
+        terrain_lat = None
+        terrain_lon = None
+        terrain_elev = None
+        terrain_tuple = _terrain_from_snapshot(next(iter(snapshots_by_time.values())))
+        if terrain_tuple is not None:
+            terrain_lat, terrain_lon, terrain_elev = terrain_tuple
 
         interp_cache: dict[datetime, HRRRInterpolator] = {}
         emissions: list[EmissionResult] = []
@@ -161,4 +185,10 @@ class MachCutoffSimulator:
             if emit_idx % 5 == 0:
                 print(f"[sim] emission {emit_idx + 1}/{len(emission_times)} at {emit_time.isoformat()}")
 
-        return SimulationResult(emissions=emissions, config_dict=self.config.to_dict())
+        return SimulationResult(
+            emissions=emissions,
+            config_dict=self.config.to_dict(),
+            terrain_lat_deg=terrain_lat,
+            terrain_lon_deg=terrain_lon,
+            terrain_elevation_m=terrain_elev,
+        )

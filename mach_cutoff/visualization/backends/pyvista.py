@@ -7,6 +7,7 @@ from pathlib import Path
 import numpy as np
 
 from ...simulation.outputs import SimulationResult
+from ..terrain import downsample_terrain_grid, terrain_grid_from_result
 
 
 def _polyline(points: np.ndarray):
@@ -17,6 +18,14 @@ def _polyline(points: np.ndarray):
     cells = np.hstack([[pts.shape[0]], np.arange(pts.shape[0], dtype=np.int32)])
     poly.lines = cells
     return poly
+
+
+def _terrain_mesh(lat_deg: np.ndarray, lon_deg: np.ndarray, elevation_km: np.ndarray):
+    import pyvista as pv
+
+    mesh = pv.StructuredGrid(lon_deg, lat_deg, elevation_km)
+    mesh["terrain_km"] = elevation_km.ravel(order="F")
+    return mesh
 
 
 def render_pyvista_bundle(
@@ -44,6 +53,24 @@ def render_pyvista_bundle(
         ],
         dtype=float,
     )
+    terrain_data = None
+    terrain_grid = terrain_grid_from_result(result)
+    if terrain_grid is not None:
+        terrain_data = downsample_terrain_grid(*terrain_grid, max_points_per_axis=180)
+
+    terrain_mesh = None
+    if terrain_data is not None:
+        t_lat, t_lon, t_elev = terrain_data
+        terrain_mesh = _terrain_mesh(t_lat, t_lon, t_elev / 1000.0)
+        plotter.add_mesh(
+            terrain_mesh,
+            scalars="terrain_km",
+            cmap="terrain",
+            opacity=0.65,
+            show_scalar_bar=False,
+            smooth_shading=True,
+        )
+
     plotter.add_mesh(_polyline(flight_xyz), color="black", line_width=4.0)
 
     for emission in result.emissions:
@@ -63,9 +90,23 @@ def render_pyvista_bundle(
     lat_hits, lon_hits, _ = result.all_ground_hits()
     if lat_hits.size:
         p2 = pv.Plotter(off_screen=True, window_size=(1200, 800))
-        ground_pts = np.column_stack([lon_hits, lat_hits, np.zeros_like(lat_hits)])
+        overlay_z = 0.0
+        if terrain_data is not None:
+            t_lat, t_lon, t_elev = terrain_data
+            t_km = t_elev / 1000.0
+            overlay_z = float(np.max(t_km)) + 0.05
+            p2.add_mesh(
+                _terrain_mesh(t_lat, t_lon, t_km),
+                scalars="terrain_km",
+                cmap="terrain",
+                opacity=0.85,
+                show_scalar_bar=False,
+                smooth_shading=True,
+            )
+
+        ground_pts = np.column_stack([lon_hits, lat_hits, np.full_like(lat_hits, overlay_z)])
         p2.add_points(ground_pts, color="crimson", point_size=6.0, render_points_as_spheres=True)
-        track_pts = np.column_stack([flight_xyz[:, 0], flight_xyz[:, 1], np.zeros(flight_xyz.shape[0])])
+        track_pts = np.column_stack([flight_xyz[:, 0], flight_xyz[:, 1], np.full(flight_xyz.shape[0], overlay_z)])
         p2.add_mesh(_polyline(track_pts), color="black", line_width=2.0)
         p2.view_xy()
         p2.set_background("white")
@@ -82,6 +123,16 @@ def render_pyvista_bundle(
 
         for i, emission in enumerate(result.emissions):
             p3.clear()
+            if terrain_data is not None:
+                t_lat, t_lon, t_elev = terrain_data
+                p3.add_mesh(
+                    _terrain_mesh(t_lat, t_lon, t_elev / 1000.0),
+                    scalars="terrain_km",
+                    cmap="terrain",
+                    opacity=0.65,
+                    show_scalar_bar=False,
+                    smooth_shading=True,
+                )
             partial_track = flight_xyz[: i + 1]
             p3.add_mesh(_polyline(partial_track), color="black", line_width=4.0)
             for ray in emission.rays[:max_rays_per_emission]:

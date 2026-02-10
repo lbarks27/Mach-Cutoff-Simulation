@@ -10,9 +10,9 @@ This project provides a modular, research-oriented Python simulation for superso
 4. Simulates a supersonic point-mass aircraft and emits shock rays (wavefront-normal approximation).
 5. Ray-traces propagation in a WGS84-aware setup and records ground-intersection footprints.
 6. Produces multiple visualization options:
-   - Matplotlib (static + GIF animation)
-   - Plotly (interactive HTML)
-   - PyVista (3D screenshots + GIF animation)
+   - Matplotlib (terrain-aware static + GIF animation)
+   - Plotly (terrain-aware interactive HTML)
+   - PyVista (terrain-aware 3D screenshots + GIF animation)
 
 ## Package layout
 
