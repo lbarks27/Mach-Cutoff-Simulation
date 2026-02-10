@@ -7,14 +7,14 @@ from pathlib import Path
 
 import numpy as np
 
-from ..aircraft import PointMassAircraft, generate_shock_directions
+from ..flight.aircraft import PointMassAircraft, generate_shock_directions
 from ..atmosphere.acoustics import build_acoustic_grid_field
 from ..atmosphere.hrrr import HRRRDatasetManager
 from ..atmosphere.interpolation import HRRRInterpolator
 from ..config import ExperimentConfig
-from ..geodesy import ecef_to_geodetic, ecef_to_enu, enu_to_ecef, normalize_lon_deg
-from ..raytrace import integrate_ray
-from ..waypoints import FlightPath, load_waypoints_json
+from ..core.geodesy import ecef_to_geodetic, ecef_to_enu, enu_to_ecef, normalize_lon_deg
+from ..core.raytrace import integrate_ray
+from ..flight.waypoints import FlightPath, load_waypoints_json
 from .outputs import EmissionResult, RayResult, SimulationResult
 
 

@@ -7,8 +7,8 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from ..config import GridConfig
-from ..constants import GAMMA_DRY_AIR, R_DRY_AIR
-from ..geodesy import ecef_to_geodetic, ecef_to_enu, enu_to_ecef
+from ..core.constants import GAMMA_DRY_AIR, R_DRY_AIR
+from ..core.geodesy import ecef_to_geodetic, ecef_to_enu, enu_to_ecef
 from .interpolation import HRRRInterpolator
 
 

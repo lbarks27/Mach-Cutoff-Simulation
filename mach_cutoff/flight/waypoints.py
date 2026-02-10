@@ -10,7 +10,7 @@ from typing import Iterable
 
 import numpy as np
 
-from .geodesy import ecef_to_geodetic, geodetic_to_ecef
+from ..core.geodesy import ecef_to_geodetic, geodetic_to_ecef
 
 
 @dataclass(frozen=True, slots=True)

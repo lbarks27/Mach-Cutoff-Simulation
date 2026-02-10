@@ -7,8 +7,8 @@ from datetime import datetime
 
 import numpy as np
 
-from .config import AircraftConfig, ShockConfig
-from .geodesy import enu_basis, geodetic_to_ecef
+from ..config import AircraftConfig, ShockConfig
+from ..core.geodesy import enu_basis, geodetic_to_ecef
 from .waypoints import FlightPath
 
 

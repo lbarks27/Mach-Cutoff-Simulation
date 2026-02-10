@@ -17,15 +17,16 @@ This project provides a modular, research-oriented Python simulation for superso
 ## Package layout
 
 - `mach_cutoff/config.py`: configurable experiment model
-- `mach_cutoff/waypoints.py`: waypoint ingestion and interpolation
-- `mach_cutoff/geodesy.py`: WGS84 transforms
-- `mach_cutoff/aircraft.py`: point-mass aircraft + shock ray generation
+- `mach_cutoff/core/constants.py`: physical constants
+- `mach_cutoff/core/geodesy.py`: WGS84 transforms
+- `mach_cutoff/core/raytrace.py`: adaptive ray integrator
+- `mach_cutoff/flight/waypoints.py`: waypoint ingestion and interpolation
+- `mach_cutoff/flight/aircraft.py`: point-mass aircraft + shock ray generation
 - `mach_cutoff/atmosphere/hrrr.py`: HRRR file selection/download/load
 - `mach_cutoff/atmosphere/interpolation.py`: HRRR interpolation
 - `mach_cutoff/atmosphere/acoustics.py`: sound-speed + effective-index field
-- `mach_cutoff/raytrace.py`: adaptive ray integrator
 - `mach_cutoff/simulation/engine.py`: end-to-end pipeline
-- `mach_cutoff/visualization/*`: plotting backends
+- `mach_cutoff/visualization/backends/*`: plotting backends
 - `mach_cutoff/cli.py`: command line entrypoint
 
 ## Install

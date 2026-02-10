@@ -6,7 +6,7 @@ from pathlib import Path
 
 import numpy as np
 
-from ..simulation.outputs import SimulationResult
+from ...simulation.outputs import SimulationResult
 
 
 def render_plotly_bundle(

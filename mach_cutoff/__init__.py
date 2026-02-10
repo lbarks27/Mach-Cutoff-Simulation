@@ -1,7 +1,7 @@
 """Mach cutoff simulation package."""
 
 from .config import ExperimentConfig, load_config
-from .waypoints import FlightPath, Waypoint, load_waypoints_json
+from .flight.waypoints import FlightPath, Waypoint, load_waypoints_json
 
 __all__ = [
     "ExperimentConfig",

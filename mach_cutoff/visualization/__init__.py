@@ -1,8 +1,8 @@
 """Visualization backends for Mach cutoff experiments."""
 
-from .matplotlib_backend import render_matplotlib_bundle
-from .plotly_backend import render_plotly_bundle
-from .pyvista_backend import render_pyvista_bundle
+from .backends.matplotlib import render_matplotlib_bundle
+from .backends.plotly import render_plotly_bundle
+from .backends.pyvista import render_pyvista_bundle
 
 __all__ = [
     "render_matplotlib_bundle",

@@ -12,7 +12,7 @@ from urllib.request import urlretrieve
 import numpy as np
 
 from ..config import HRRRConfig
-from ..geodesy import normalize_lon_deg
+from ..core.geodesy import normalize_lon_deg
 
 
 def _to_hour_floor(dt: datetime) -> datetime:

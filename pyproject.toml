@@ -43,4 +43,12 @@ all = [
 mach-cutoff = "mach_cutoff.cli:main"
 
 [tool.setuptools]
-packages = ["mach_cutoff", "mach_cutoff.atmosphere", "mach_cutoff.simulation", "mach_cutoff.visualization"]
+packages = [
+  "mach_cutoff",
+  "mach_cutoff.atmosphere",
+  "mach_cutoff.core",
+  "mach_cutoff.flight",
+  "mach_cutoff.simulation",
+  "mach_cutoff.visualization",
+  "mach_cutoff.visualization.backends",
+]
