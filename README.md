@@ -108,6 +108,7 @@ python3 -m mach_cutoff.cli \
 - `--skip-plotly`
 - `--skip-pyvista`
 - `--no-animation`
+- `--interactive` (opens live windows for matplotlib/pyvista and opens plotly 3D HTML in browser)
 
 ## Outputs
 

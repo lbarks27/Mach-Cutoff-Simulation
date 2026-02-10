@@ -16,6 +16,7 @@ def render_matplotlib_bundle(
     *,
     make_animation: bool = True,
     max_rays_per_emission: int = 24,
+    show_window: bool = False,
 ):
     try:
         import matplotlib.pyplot as plt
@@ -26,6 +27,8 @@ def render_matplotlib_bundle(
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     generated = {}
+    figures_to_show = []
+    animations_to_show = []
 
     # 3D static view
     fig = plt.figure(figsize=(12, 8))
@@ -69,7 +72,10 @@ def render_matplotlib_bundle(
     p3d = out_dir / "matplotlib_3d.png"
     fig.tight_layout()
     fig.savefig(p3d, dpi=180)
-    plt.close(fig)
+    if show_window:
+        figures_to_show.append(fig)
+    else:
+        plt.close(fig)
     generated["3d_static_png"] = str(p3d)
 
     # Ground-hit map
@@ -92,7 +98,10 @@ def render_matplotlib_bundle(
     pg = out_dir / "matplotlib_ground_hits.png"
     fig2.tight_layout()
     fig2.savefig(pg, dpi=180)
-    plt.close(fig2)
+    if show_window:
+        figures_to_show.append(fig2)
+    else:
+        plt.close(fig2)
     generated["ground_hits_png"] = str(pg)
 
     # Vertical ray section (first emission)
@@ -112,7 +121,10 @@ def render_matplotlib_bundle(
         pv = out_dir / "matplotlib_vertical_section.png"
         fig3.tight_layout()
         fig3.savefig(pv, dpi=180)
-        plt.close(fig3)
+        if show_window:
+            figures_to_show.append(fig3)
+        else:
+            plt.close(fig3)
         generated["vertical_section_png"] = str(pv)
 
     # 3D animation (emission-by-emission)
@@ -175,10 +187,22 @@ def render_matplotlib_bundle(
 
         anim = FuncAnimation(fig4, update, frames=len(result.emissions), init_func=init, blit=False)
         pa = out_dir / "matplotlib_3d_animation.gif"
+        if show_window:
+            animations_to_show.append(anim)
+            figures_to_show.append(fig4)
+            generated["animation_window"] = "shown"
+        else:
+            try:
+                anim.save(pa, writer=PillowWriter(fps=8))
+                generated["animation_gif"] = str(pa)
+            finally:
+                plt.close(fig4)
+
+    if show_window and figures_to_show:
         try:
-            anim.save(pa, writer=PillowWriter(fps=8))
-            generated["animation_gif"] = str(pa)
+            plt.show()
         finally:
-            plt.close(fig4)
+            for fig_ in figures_to_show:
+                plt.close(fig_)
 
     return generated

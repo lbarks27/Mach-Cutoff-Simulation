@@ -24,6 +24,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--skip-plotly", action="store_true", help="Disable plotly outputs")
     parser.add_argument("--skip-pyvista", action="store_true", help="Disable pyvista outputs")
     parser.add_argument("--no-animation", action="store_true", help="Disable animation outputs")
+    parser.add_argument(
+        "--interactive",
+        action="store_true",
+        help="Open live render windows (matplotlib/pyvista) and open plotly 3D in browser",
+    )
     return parser
 
 
@@ -57,6 +62,7 @@ def main(argv=None):
                 result,
                 output_dir,
                 make_animation=(cfg.visualization.make_animation and not args.no_animation),
+                show_window=args.interactive,
             )
         except Exception as exc:
             print(f"[warn] matplotlib backend failed: {exc}")
@@ -67,6 +73,7 @@ def main(argv=None):
                 result,
                 output_dir,
                 write_html=cfg.visualization.write_html,
+                open_browser=args.interactive,
             )
         except Exception as exc:
             print(f"[warn] plotly backend failed: {exc}")
@@ -77,6 +84,7 @@ def main(argv=None):
                 result,
                 output_dir,
                 make_animation=(cfg.visualization.make_animation and not args.no_animation),
+                show_window=args.interactive,
             )
         except Exception as exc:
             print(f"[warn] pyvista backend failed: {exc}")

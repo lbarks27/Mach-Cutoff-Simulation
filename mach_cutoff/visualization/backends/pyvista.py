@@ -34,6 +34,7 @@ def render_pyvista_bundle(
     *,
     make_animation: bool = True,
     max_rays_per_emission: int = 20,
+    show_window: bool = False,
 ):
     try:
         import pyvista as pv
@@ -45,7 +46,7 @@ def render_pyvista_bundle(
     generated = {}
 
     # Static 3D screenshot
-    plotter = pv.Plotter(off_screen=True, window_size=(1400, 900))
+    plotter = pv.Plotter(off_screen=not show_window, window_size=(1400, 900))
     flight_xyz = np.array(
         [
             [e.aircraft_lon_deg, e.aircraft_lat_deg, e.aircraft_alt_m / 1000.0]
@@ -83,13 +84,15 @@ def render_pyvista_bundle(
     plotter.set_background("white")
     ps = out_dir / "pyvista_3d.png"
     plotter.screenshot(ps)
+    if show_window:
+        plotter.show(title="Mach Cutoff 3D View", auto_close=False)
     plotter.close()
     generated["3d_screenshot_png"] = str(ps)
 
     # Ground-hit top view screenshot
     lat_hits, lon_hits, _ = result.all_ground_hits()
     if lat_hits.size:
-        p2 = pv.Plotter(off_screen=True, window_size=(1200, 800))
+        p2 = pv.Plotter(off_screen=not show_window, window_size=(1200, 800))
         overlay_z = 0.0
         if terrain_data is not None:
             t_lat, t_lon, t_elev = terrain_data
@@ -112,38 +115,71 @@ def render_pyvista_bundle(
         p2.set_background("white")
         pg = out_dir / "pyvista_ground_hits.png"
         p2.screenshot(pg)
+        if show_window:
+            p2.show(title="Mach Cutoff Ground Footprint", auto_close=False)
         p2.close()
         generated["ground_hits_png"] = str(pg)
 
     # Animated GIF over emissions
     if make_animation and result.emissions:
-        pa = out_dir / "pyvista_3d_animation.gif"
-        p3 = pv.Plotter(off_screen=True, window_size=(1200, 800))
-        p3.open_gif(str(pa), fps=8)
+        if show_window:
+            import time
 
-        for i, emission in enumerate(result.emissions):
-            p3.clear()
-            if terrain_data is not None:
-                t_lat, t_lon, t_elev = terrain_data
-                p3.add_mesh(
-                    _terrain_mesh(t_lat, t_lon, t_elev / 1000.0),
-                    scalars="terrain_km",
-                    cmap="terrain",
-                    opacity=0.65,
-                    show_scalar_bar=False,
-                    smooth_shading=True,
-                )
-            partial_track = flight_xyz[: i + 1]
-            p3.add_mesh(_polyline(partial_track), color="black", line_width=4.0)
-            for ray in emission.rays[:max_rays_per_emission]:
-                g = ray.trajectory_geodetic
-                pts = np.column_stack([g[:, 1], g[:, 0], g[:, 2] / 1000.0])
-                p3.add_mesh(_polyline(pts), color="#1f77b4", opacity=0.35, line_width=1.4)
-            p3.add_axes()
-            p3.set_background("white")
-            p3.write_frame()
+            p3 = pv.Plotter(off_screen=False, window_size=(1200, 800))
+            p3.show(title="Mach Cutoff Animation", auto_close=False, interactive_update=True)
+            for i, emission in enumerate(result.emissions):
+                p3.clear()
+                if terrain_data is not None:
+                    t_lat, t_lon, t_elev = terrain_data
+                    p3.add_mesh(
+                        _terrain_mesh(t_lat, t_lon, t_elev / 1000.0),
+                        scalars="terrain_km",
+                        cmap="terrain",
+                        opacity=0.65,
+                        show_scalar_bar=False,
+                        smooth_shading=True,
+                    )
+                partial_track = flight_xyz[: i + 1]
+                p3.add_mesh(_polyline(partial_track), color="black", line_width=4.0)
+                for ray in emission.rays[:max_rays_per_emission]:
+                    g = ray.trajectory_geodetic
+                    pts = np.column_stack([g[:, 1], g[:, 0], g[:, 2] / 1000.0])
+                    p3.add_mesh(_polyline(pts), color="#1f77b4", opacity=0.35, line_width=1.4)
+                p3.add_axes()
+                p3.set_background("white")
+                p3.render()
+                p3.update()
+                time.sleep(0.12)
+            p3.close()
+            generated["animation_window"] = "shown"
+        else:
+            pa = out_dir / "pyvista_3d_animation.gif"
+            p3 = pv.Plotter(off_screen=True, window_size=(1200, 800))
+            p3.open_gif(str(pa), fps=8)
 
-        p3.close()
-        generated["animation_gif"] = str(pa)
+            for i, emission in enumerate(result.emissions):
+                p3.clear()
+                if terrain_data is not None:
+                    t_lat, t_lon, t_elev = terrain_data
+                    p3.add_mesh(
+                        _terrain_mesh(t_lat, t_lon, t_elev / 1000.0),
+                        scalars="terrain_km",
+                        cmap="terrain",
+                        opacity=0.65,
+                        show_scalar_bar=False,
+                        smooth_shading=True,
+                    )
+                partial_track = flight_xyz[: i + 1]
+                p3.add_mesh(_polyline(partial_track), color="black", line_width=4.0)
+                for ray in emission.rays[:max_rays_per_emission]:
+                    g = ray.trajectory_geodetic
+                    pts = np.column_stack([g[:, 1], g[:, 0], g[:, 2] / 1000.0])
+                    p3.add_mesh(_polyline(pts), color="#1f77b4", opacity=0.35, line_width=1.4)
+                p3.add_axes()
+                p3.set_background("white")
+                p3.write_frame()
+
+            p3.close()
+            generated["animation_gif"] = str(pa)
 
     return generated

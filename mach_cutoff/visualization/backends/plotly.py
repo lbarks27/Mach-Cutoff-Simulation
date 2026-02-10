@@ -16,6 +16,7 @@ def render_plotly_bundle(
     *,
     write_html: bool = True,
     max_rays_per_emission: int = 24,
+    open_browser: bool = False,
 ):
     try:
         import plotly.graph_objects as go
@@ -91,6 +92,12 @@ def render_plotly_bundle(
         p3d = out_dir / "plotly_3d.html"
         fig3d.write_html(p3d, include_plotlyjs="cdn")
         generated["3d_html"] = str(p3d)
+        if open_browser:
+            import webbrowser
+
+            webbrowser.open(p3d.resolve().as_uri())
+    elif open_browser:
+        fig3d.show()
 
     # Ground hits
     lat_hits, lon_hits, _ = result.all_ground_hits()
