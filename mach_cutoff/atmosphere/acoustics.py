@@ -37,6 +37,50 @@ def compute_sound_speed_mps(
     return np.sqrt(GAMMA_DRY_AIR * r_moist * t)
 
 
+def project_wind_component_mps(
+    u_wind_mps: np.ndarray,
+    v_wind_mps: np.ndarray,
+    velocity_enu: np.ndarray,
+    mode: str,
+) -> np.ndarray:
+    mode = mode.lower()
+    if mode == "none":
+        return np.zeros_like(u_wind_mps)
+    if mode == "eastward":
+        return u_wind_mps
+    if mode == "northward":
+        return v_wind_mps
+
+    vx, vy, vz = velocity_enu
+    if mode == "along_track_3d":
+        norm = np.linalg.norm([vx, vy, vz])
+        if norm <= 1e-6:
+            return np.zeros_like(u_wind_mps)
+        return u_wind_mps * (vx / norm) + v_wind_mps * (vy / norm)
+
+    horiz = np.array([vx, vy], dtype=np.float32)
+    norm_h = np.linalg.norm(horiz)
+    if norm_h <= 1e-6:
+        return np.zeros_like(u_wind_mps)
+    hx, hy = horiz / norm_h
+    return u_wind_mps * hx + v_wind_mps * hy
+
+
+def compute_effective_sound_speed_mps(
+    temperature_k: np.ndarray,
+    pressure_hpa: np.ndarray,
+    relative_humidity_pct: np.ndarray,
+    u_wind_mps: np.ndarray,
+    v_wind_mps: np.ndarray,
+    velocity_enu: np.ndarray,
+    mode: str,
+):
+    sound_speed_mps = compute_sound_speed_mps(temperature_k, pressure_hpa, relative_humidity_pct)
+    wind_projection_mps = project_wind_component_mps(u_wind_mps, v_wind_mps, velocity_enu, mode)
+    effective_sound_speed_mps = np.clip(sound_speed_mps + wind_projection_mps, 50.0, None)
+    return sound_speed_mps, wind_projection_mps, effective_sound_speed_mps
+
+
 def _manual_trilinear(grid_x, grid_y, grid_z, values, point):
     x, y, z = point
 
@@ -130,35 +174,6 @@ class AcousticGridField:
         return np.array([gx, gy, gz], dtype=float)
 
 
-def _wind_projection(
-    u_wind_mps: np.ndarray,
-    v_wind_mps: np.ndarray,
-    velocity_enu: np.ndarray,
-    mode: str,
-) -> np.ndarray:
-    mode = mode.lower()
-    if mode == "none":
-        return np.zeros_like(u_wind_mps)
-    if mode == "eastward":
-        return u_wind_mps
-    if mode == "northward":
-        return v_wind_mps
-
-    vx, vy, vz = velocity_enu
-    if mode == "along_track_3d":
-        norm = np.linalg.norm([vx, vy, vz])
-        if norm <= 1e-6:
-            return np.zeros_like(u_wind_mps)
-        return u_wind_mps * (vx / norm) + v_wind_mps * (vy / norm)
-
-    horiz = np.array([vx, vy], dtype=np.float32)
-    norm_h = np.linalg.norm(horiz)
-    if norm_h <= 1e-6:
-        return np.zeros_like(u_wind_mps)
-    hx, hy = horiz / norm_h
-    return u_wind_mps * hx + v_wind_mps * hy
-
-
 def build_acoustic_grid_field(
     hrrr_interp: HRRRInterpolator,
     aircraft_lat_deg: float,
@@ -186,8 +201,6 @@ def build_acoustic_grid_field(
     v = cols["v_wind_mps"]
     p = cols["pressure_hpa"]
 
-    c = compute_sound_speed_mps(temp, p, rh)
-
     origin_ecef = enu_to_ecef(
         aircraft_lat_deg,
         aircraft_lon_deg,
@@ -202,8 +215,15 @@ def build_acoustic_grid_field(
     )
     velocity_enu = np.asarray(velocity_enu, dtype=np.float32)
 
-    w_proj = _wind_projection(u, v, velocity_enu.reshape(-1), grid_config.wind_projection_mode)
-    c_eff = np.clip(c + w_proj, 50.0, None)
+    _, _, c_eff = compute_effective_sound_speed_mps(
+        temp,
+        p,
+        rh,
+        u,
+        v,
+        velocity_enu.reshape(-1),
+        grid_config.wind_projection_mode,
+    )
 
     n_cols = np.clip(reference_speed_mps / c_eff, 0.5, 2.0).astype(np.float32)
     n_grid = n_cols.reshape(grid_config.ny, grid_config.nx, grid_config.nz).transpose(1, 0, 2)

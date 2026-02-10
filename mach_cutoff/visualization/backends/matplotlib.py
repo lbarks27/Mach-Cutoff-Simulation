@@ -16,6 +16,7 @@ def render_matplotlib_bundle(
     *,
     make_animation: bool = True,
     max_rays_per_emission: int = 24,
+    include_atmosphere: bool = True,
     show_window: bool = False,
 ):
     try:
@@ -126,6 +127,144 @@ def render_matplotlib_bundle(
         else:
             plt.close(fig3)
         generated["vertical_section_png"] = str(pv)
+
+    # Atmospheric time-series diagnostics
+    if include_atmosphere and result.atmospheric_time_series is not None:
+        ts = result.atmospheric_time_series
+        figa, axes = plt.subplots(3, 1, figsize=(11, 9), sharex=True)
+
+        x = np.arange(len(ts.emission_times_utc), dtype=float)
+        x_label = "Emission index"
+        if ts.emission_times_utc:
+            try:
+                import matplotlib.dates as mdates
+
+                x = mdates.date2num(ts.emission_times_utc)
+                axes[2].xaxis_date()
+                axes[2].xaxis.set_major_formatter(mdates.DateFormatter("%H:%M:%S"))
+                figa.autofmt_xdate(rotation=25)
+                x_label = "Emission time (UTC)"
+            except Exception:
+                pass
+
+        axes[0].plot(x, ts.temperature_k - 273.15, color="#d62728", linewidth=1.8, label="Temperature (C)")
+        ax0b = axes[0].twinx()
+        ax0b.plot(x, ts.relative_humidity_pct, color="#1f77b4", linewidth=1.4, alpha=0.9, label="RH (%)")
+        h0, l0 = axes[0].get_legend_handles_labels()
+        h0b, l0b = ax0b.get_legend_handles_labels()
+        axes[0].legend(h0 + h0b, l0 + l0b, loc="best")
+        axes[0].set_ylabel("Temperature (C)")
+        ax0b.set_ylabel("Relative humidity (%)")
+        axes[0].grid(True, alpha=0.22)
+
+        axes[1].plot(x, ts.u_wind_mps, color="#2ca02c", linewidth=1.4, label="U wind (m/s)")
+        axes[1].plot(x, ts.v_wind_mps, color="#17becf", linewidth=1.4, label="V wind (m/s)")
+        axes[1].plot(x, ts.wind_projection_mps, color="#9467bd", linewidth=1.4, linestyle="--", label="Wind projection (m/s)")
+        axes[1].axhline(0.0, color="0.5", linewidth=0.8, alpha=0.8)
+        axes[1].set_ylabel("Wind speed (m/s)")
+        axes[1].grid(True, alpha=0.22)
+        axes[1].legend(loc="best")
+
+        axes[2].plot(x, ts.sound_speed_mps, color="#8c564b", linewidth=1.3, linestyle="--", label="Sound speed (m/s)")
+        axes[2].plot(
+            x,
+            ts.effective_sound_speed_mps,
+            color="#ff7f0e",
+            linewidth=1.8,
+            label="Effective sound speed (m/s)",
+        )
+        ax2b = axes[2].twinx()
+        ax2b.plot(x, ts.pressure_hpa, color="#7f7f7f", linewidth=1.2, alpha=0.9, label="Pressure (hPa)")
+        h2, l2 = axes[2].get_legend_handles_labels()
+        h2b, l2b = ax2b.get_legend_handles_labels()
+        axes[2].legend(h2 + h2b, l2 + l2b, loc="best")
+        axes[2].set_ylabel("Speed (m/s)")
+        ax2b.set_ylabel("Pressure (hPa)")
+        axes[2].set_xlabel(x_label)
+        axes[2].grid(True, alpha=0.22)
+
+        axes[0].set_title("Atmospheric Conditions at Aircraft Position")
+
+        pa = out_dir / "matplotlib_atmospheric_timeseries.png"
+        figa.tight_layout()
+        figa.savefig(pa, dpi=180)
+        if show_window:
+            figures_to_show.append(figa)
+        else:
+            plt.close(figa)
+        generated["atmospheric_timeseries_png"] = str(pa)
+
+    # Atmospheric vertical profile diagnostics
+    if include_atmosphere and result.atmospheric_vertical_profile is not None:
+        profile = result.atmospheric_vertical_profile
+        altitude_km = profile.altitude_m / 1000.0
+
+        figp, axp = plt.subplots(2, 3, figsize=(15, 10), sharey=True)
+        ax_temp = axp[0, 0]
+        ax_rh = axp[0, 1]
+        ax_pressure = axp[0, 2]
+        ax_wind = axp[1, 0]
+        ax_speed = axp[1, 1]
+        ax_info = axp[1, 2]
+
+        ax_temp.plot(profile.temperature_k - 273.15, altitude_km, color="#d62728", linewidth=1.8)
+        ax_temp.set_xlabel("Temperature (C)")
+        ax_temp.set_ylabel("Altitude (km MSL)")
+        ax_temp.grid(True, alpha=0.22)
+
+        ax_rh.plot(profile.relative_humidity_pct, altitude_km, color="#1f77b4", linewidth=1.8)
+        ax_rh.set_xlabel("Relative humidity (%)")
+        ax_rh.grid(True, alpha=0.22)
+
+        ax_pressure.plot(profile.pressure_hpa, altitude_km, color="#7f7f7f", linewidth=1.8)
+        ax_pressure.set_xlabel("Pressure (hPa)")
+        ax_pressure.grid(True, alpha=0.22)
+
+        ax_wind.plot(profile.u_wind_mps, altitude_km, color="#2ca02c", linewidth=1.4, label="U wind (m/s)")
+        ax_wind.plot(profile.v_wind_mps, altitude_km, color="#17becf", linewidth=1.4, label="V wind (m/s)")
+        ax_wind.plot(
+            profile.wind_projection_mps,
+            altitude_km,
+            color="#9467bd",
+            linewidth=1.4,
+            linestyle="--",
+            label="Wind projection (m/s)",
+        )
+        ax_wind.axvline(0.0, color="0.5", linewidth=0.8, alpha=0.8)
+        ax_wind.set_xlabel("Wind speed (m/s)")
+        ax_wind.set_ylabel("Altitude (km MSL)")
+        ax_wind.grid(True, alpha=0.22)
+        ax_wind.legend(loc="best")
+
+        ax_speed.plot(profile.sound_speed_mps, altitude_km, color="#8c564b", linewidth=1.4, linestyle="--", label="Sound speed (m/s)")
+        ax_speed.plot(
+            profile.effective_sound_speed_mps,
+            altitude_km,
+            color="#ff7f0e",
+            linewidth=1.8,
+            label="Effective sound speed (m/s)",
+        )
+        ax_speed.set_xlabel("Speed (m/s)")
+        ax_speed.grid(True, alpha=0.22)
+        ax_speed.legend(loc="best")
+
+        ax_info.axis("off")
+        ax_info.text(0.0, 0.92, "Profile metadata", fontsize=11, fontweight="bold", transform=ax_info.transAxes)
+        ax_info.text(0.0, 0.76, f"Emission: {profile.emission_time_utc.isoformat()}", fontsize=9, transform=ax_info.transAxes)
+        ax_info.text(0.0, 0.62, f"Lat: {profile.aircraft_lat_deg:.4f} deg", fontsize=9, transform=ax_info.transAxes)
+        ax_info.text(0.0, 0.52, f"Lon: {profile.aircraft_lon_deg:.4f} deg", fontsize=9, transform=ax_info.transAxes)
+        ax_info.text(0.0, 0.42, f"Alt: {profile.aircraft_alt_m:.0f} m", fontsize=9, transform=ax_info.transAxes)
+
+        figp.suptitle("Atmospheric Vertical Profile at First Emission", fontsize=14, y=0.98)
+
+        pap = out_dir / "matplotlib_atmospheric_profile.png"
+        figp.tight_layout()
+        figp.savefig(pap, dpi=180)
+        if show_window:
+            figures_to_show.append(figp)
+        else:
+            plt.close(figp)
+        generated["atmospheric_profile_png"] = str(pap)
 
     # 3D animation (emission-by-emission)
     if make_animation and result.emissions:
