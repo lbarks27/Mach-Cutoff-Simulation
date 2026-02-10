@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mach-cutoff-sim"
+version = "0.1.0"
+description = "Experimental Mach cutoff simulation with HRRR-driven acoustic ray tracing"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy>=1.24",
+]
+
+[project.optional-dependencies]
+core = [
+  "scipy>=1.10",
+]
+hrrr = [
+  "scipy>=1.10",
+  "xarray>=2024.1",
+  "cfgrib>=0.9.14",
+  "s3fs>=2024.2",
+]
+viz = [
+  "matplotlib>=3.7",
+  "plotly>=5.20",
+  "pyvista>=0.43",
+  "pillow>=10.0",
+]
+all = [
+  "scipy>=1.10",
+  "xarray>=2024.1",
+  "cfgrib>=0.9.14",
+  "s3fs>=2024.2",
+  "matplotlib>=3.7",
+  "plotly>=5.20",
+  "pyvista>=0.43",
+  "pillow>=10.0",
+]
+
+[project.scripts]
+mach-cutoff = "mach_cutoff.cli:main"
+
+[tool.setuptools]
+packages = ["mach_cutoff", "mach_cutoff.atmosphere", "mach_cutoff.simulation", "mach_cutoff.visualization"]

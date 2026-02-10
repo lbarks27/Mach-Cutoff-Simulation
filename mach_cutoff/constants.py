@@ -1,0 +1,18 @@
+"""Physical constants and WGS84 parameters."""
+
+from __future__ import annotations
+
+WGS84_A_M = 6_378_137.0
+WGS84_INV_F = 298.257223563
+WGS84_F = 1.0 / WGS84_INV_F
+WGS84_B_M = WGS84_A_M * (1.0 - WGS84_F)
+WGS84_E2 = WGS84_F * (2.0 - WGS84_F)
+WGS84_EP2 = (WGS84_A_M**2 - WGS84_B_M**2) / (WGS84_B_M**2)
+
+GAMMA_DRY_AIR = 1.4
+R_DRY_AIR = 287.05
+R_WATER_VAPOR = 461.5
+STD_SOUND_SPEED_MPS = 340.29
+
+SECONDS_PER_HOUR = 3600.0
+SECONDS_PER_MINUTE = 60.0
