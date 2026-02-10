@@ -33,24 +33,29 @@ This project provides a modular, research-oriented Python simulation for superso
 From this repo:
 
 ```bash
-python -m venv .venv
+python3 -m venv .venv
 source .venv/bin/activate
-pip install -e .[all]
+python3 -m pip install --upgrade pip
+python3 -m pip install -e '.[all]'
 ```
 
 `cfgrib` requires ECMWF ecCodes installed on your system.
 
+If you see `error: externally-managed-environment`, you are using system Python without a venv. Use the commands above (venv + activate) and retry.
+
+If you use `zsh`, keep extras quoted (for example `'.[all]'`), otherwise zsh may treat brackets as globs.
+
 If you want minimal install first:
 
 ```bash
-pip install -e .[core]
+python3 -m pip install -e '.[core]'
 ```
 
 Then add optional groups as needed:
 
 ```bash
-pip install -e .[hrrr]
-pip install -e .[viz]
+python3 -m pip install -e '.[hrrr]'
+python3 -m pip install -e '.[viz]'
 ```
 
 ## Waypoint JSON format
@@ -75,13 +80,25 @@ mach-cutoff \
   --output-dir outputs
 ```
 
+First-run note: full config can take time due HRRR download and 3 visualization backends.
+
 Or without installing script:
 
 ```bash
-python -m mach_cutoff.cli \
+python3 -m mach_cutoff.cli \
   --waypoints examples/waypoints_example.json \
   --config examples/config_example.json \
   --output-dir outputs
+```
+
+Quick smoke run (validated locally on this machine):
+
+```bash
+python3 -m mach_cutoff.cli \
+  --waypoints examples/waypoints_example.json \
+  --config examples/config_smoke.json \
+  --output-dir outputs_smoke \
+  --no-animation
 ```
 
 ### Useful flags
