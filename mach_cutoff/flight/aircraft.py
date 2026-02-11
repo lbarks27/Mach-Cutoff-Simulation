@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import numpy as np
 
@@ -30,16 +30,38 @@ class PointMassAircraft:
         self.config = config
         if config.mach <= 1.0:
             raise ValueError("Aircraft Mach must be > 1.0 for sonic boom simulation")
+        self._speed_mps = float(config.mach * config.reference_sound_speed_mps)
+        if self._speed_mps <= 0.0:
+            raise ValueError("Aircraft speed must be positive")
+        self._start_time = self.flight_path.start_time
+        self._route_length_m = float(self.flight_path.total_length_m)
+        self._duration_s = float(self._route_length_m / self._speed_mps)
+        self._end_time = self._start_time + timedelta(seconds=self._duration_s)
+
+    @property
+    def start_time(self) -> datetime:
+        return self._start_time
+
+    @property
+    def end_time(self) -> datetime:
+        return self._end_time
+
+    @property
+    def duration_s(self) -> float:
+        return self._duration_s
 
     def state_at(self, time_utc: datetime) -> AircraftState:
-        path_state = self.flight_path.state_at(time_utc)
+        elapsed_s = float((time_utc - self._start_time).total_seconds())
+        elapsed_s = float(np.clip(elapsed_s, 0.0, self._duration_s))
+        distance_m = elapsed_s * self._speed_mps
+        path_state = self.flight_path.state_at_distance(distance_m)
         lat = path_state["lat_deg"]
         lon = path_state["lon_deg"]
 
         alt = self.config.constant_altitude_m
         position_ecef = geodetic_to_ecef(lat, lon, alt)
 
-        speed = self.config.mach * self.config.reference_sound_speed_mps
+        speed = self._speed_mps
         tangent = np.asarray(path_state["tangent_ecef"], dtype=float)
         tangent_norm = np.linalg.norm(tangent)
         if tangent_norm == 0.0:
@@ -80,7 +102,7 @@ def generate_shock_directions(
     aircraft_state: AircraftState,
     shock_config: ShockConfig,
 ):
-    """Generate cone-distributed rays as wavefront normals trailing the aircraft."""
+    """Generate cone-distributed rays in the selected reference frame."""
     rays_per_emission = int(shock_config.rays_per_emission)
     if rays_per_emission <= 0:
         raise ValueError("rays_per_emission must be positive")
@@ -89,9 +111,20 @@ def generate_shock_directions(
     mach_angle = np.arcsin(1.0 / mach)
     launch_angle = 0.5 * np.pi - mach_angle
 
-    vel_axis = aircraft_state.velocity_ecef_mps / np.linalg.norm(aircraft_state.velocity_ecef_mps)
-    aft_axis = -vel_axis
-    axis, b1, b2 = _orthonormal_basis_from_axis(aft_axis)
+    mode = str(shock_config.direction_reference).strip().lower()
+    if mode in {"earth_down", "earth"}:
+        _, _, up = enu_basis(aircraft_state.lat_deg, aircraft_state.lon_deg)
+        axis = -up
+    elif mode in {"aircraft_aft", "aircraft", "legacy"}:
+        vel_axis = aircraft_state.velocity_ecef_mps / np.linalg.norm(aircraft_state.velocity_ecef_mps)
+        axis = -vel_axis
+    else:
+        raise ValueError(
+            f"Unsupported shock.direction_reference '{shock_config.direction_reference}'. "
+            "Use 'earth_down' or 'aircraft_aft'."
+        )
+
+    axis, b1, b2 = _orthonormal_basis_from_axis(axis)
 
     az0 = np.deg2rad(shock_config.azimuth_offset_deg)
     azimuths = az0 + np.linspace(0.0, 2.0 * np.pi, rays_per_emission, endpoint=False)

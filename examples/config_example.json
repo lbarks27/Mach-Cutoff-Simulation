@@ -21,7 +21,7 @@
     "wind_projection_mode": "heading"
   },
   "aircraft": {
-    "mach": 1.7,
+    "mach": 1.05,
     "constant_altitude_m": 16500.0,
     "reference_sound_speed_mps": 340.29
   },
@@ -29,7 +29,8 @@
     "emission_interval_s": 20.0,
     "rays_per_emission": 28,
     "downward_only": true,
-    "azimuth_offset_deg": 0.0
+    "azimuth_offset_deg": 0.0,
+    "direction_reference": "earth_down"
   },
   "raytrace": {
     "ds_m": 300.0,
@@ -52,6 +53,7 @@
     "enable_pyvista": true,
     "output_dir": "outputs",
     "make_animation": true,
-    "write_html": true
+    "write_html": true,
+    "include_atmosphere": true
   }
 }

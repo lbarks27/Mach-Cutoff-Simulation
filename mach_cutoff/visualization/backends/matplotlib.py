@@ -48,19 +48,32 @@ def render_matplotlib_bundle(
 
     terrain_min_km = 0.0
     terrain_max_km = 0.0
+    lon_min = float(np.min(flight_lons)) if flight_lons else -1.0
+    lon_max = float(np.max(flight_lons)) if flight_lons else 1.0
+    lat_min = float(np.min(flight_lats)) if flight_lats else -1.0
+    lat_max = float(np.max(flight_lats)) if flight_lats else 1.0
     if terrain_3d is not None:
         t_lat, t_lon, t_elev = terrain_3d
         terrain_km = t_elev / 1000.0
         terrain_min_km = float(np.min(terrain_km))
         terrain_max_km = float(np.max(terrain_km))
+        lon_min = min(lon_min, float(np.min(t_lon)))
+        lon_max = max(lon_max, float(np.max(t_lon)))
+        lat_min = min(lat_min, float(np.min(t_lat)))
+        lat_max = max(lat_max, float(np.max(t_lat)))
         ax.plot_surface(t_lon, t_lat, terrain_km, cmap="terrain", linewidth=0, antialiased=False, alpha=0.5)
 
     ax.plot(flight_lons, flight_lats, flight_alt_km, color="black", linewidth=2.0, label="Flight")
 
+    ray_alt_min_km = np.inf
+    ray_alt_max_km = -np.inf
     for emission in result.emissions:
         for ray in emission.rays[:max_rays_per_emission]:
             geo = ray.trajectory_geodetic
-            ax.plot(geo[:, 1], geo[:, 0], geo[:, 2] / 1000.0, alpha=0.25, linewidth=0.6, color="#1f77b4")
+            alt_km = geo[:, 2] / 1000.0
+            ray_alt_min_km = min(ray_alt_min_km, float(np.min(alt_km)))
+            ray_alt_max_km = max(ray_alt_max_km, float(np.max(alt_km)))
+            ax.plot(geo[:, 1], geo[:, 0], alt_km, alpha=0.25, linewidth=0.6, color="#1f77b4")
 
     ax.set_xlabel("Longitude (deg)")
     ax.set_ylabel("Latitude (deg)")
@@ -68,7 +81,21 @@ def render_matplotlib_bundle(
     ax.set_title("Mach Cutoff: 3D Flight + Ray Propagation")
     ax.legend(loc="upper left")
     if flight_alt_km:
-        ax.set_zlim(min(terrain_min_km, 0.0) - 0.2, max(max(flight_alt_km), terrain_max_km) + 5.0)
+        z_min = min(terrain_min_km, 0.0)
+        z_max = max(max(flight_alt_km), terrain_max_km)
+        if np.isfinite(ray_alt_min_km):
+            z_min = min(z_min, ray_alt_min_km)
+        if np.isfinite(ray_alt_max_km):
+            z_max = max(z_max, ray_alt_max_km)
+        ax.set_zlim(z_min - 0.2, z_max + 0.2)
+
+        mean_lat_deg = 0.5 * (lat_min + lat_max)
+        meters_per_deg_lat = 111_320.0
+        meters_per_deg_lon = max(1.0, 111_320.0 * float(np.cos(np.deg2rad(mean_lat_deg))))
+        x_span_m = max(1.0, (lon_max - lon_min) * meters_per_deg_lon)
+        y_span_m = max(1.0, (lat_max - lat_min) * meters_per_deg_lat)
+        z_span_m = max(1.0, (z_max - z_min) * 1000.0)
+        ax.set_box_aspect((x_span_m, y_span_m, z_span_m))
 
     p3d = out_dir / "matplotlib_3d.png"
     fig.tight_layout()

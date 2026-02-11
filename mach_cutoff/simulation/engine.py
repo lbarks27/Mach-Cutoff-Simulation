@@ -16,6 +16,7 @@ from ..core.geodesy import ecef_to_geodetic, ecef_to_enu, enu_to_ecef, normalize
 from ..core.raytrace import integrate_ray
 from ..flight.waypoints import FlightPath, load_waypoints_json
 from .outputs import (
+    AtmosphericGrid3D,
     AtmosphericTimeSeries,
     AtmosphericVerticalProfile,
     EmissionResult,
@@ -82,14 +83,26 @@ class MachCutoffSimulator:
     def run(self, path: FlightPath) -> SimulationResult:
         aircraft = PointMassAircraft(path, self.config.aircraft)
 
-        start_time = _parse_time_iso(self.config.runtime.start_time_iso) or path.start_time
-        end_time = _parse_time_iso(self.config.runtime.end_time_iso) or path.end_time
+        start_time = _parse_time_iso(self.config.runtime.start_time_iso) or aircraft.start_time
+        end_time = _parse_time_iso(self.config.runtime.end_time_iso) or aircraft.end_time
 
-        emission_times = path.sample_times(self.config.shock.emission_interval_s, start=start_time, end=end_time)
+        emission_times = path.sample_times(
+            self.config.shock.emission_interval_s,
+            start=start_time,
+            end=end_time,
+            clamp_to_path_bounds=False,
+        )
         if self.config.runtime.max_emissions is not None:
             emission_times = emission_times[: self.config.runtime.max_emissions]
         if not emission_times:
             return SimulationResult(emissions=[], config_dict=self.config.to_dict())
+
+        total_emissions = len(emission_times)
+        first_emit_epoch = emission_times[0].timestamp()
+        last_emit_epoch = emission_times[-1].timestamp()
+        emission_window_duration_s = max(0.0, last_emit_epoch - first_emit_epoch)
+        flight_start_epoch = aircraft.start_time.timestamp()
+        flight_duration_s = max(0.0, aircraft.duration_s)
 
         bbox = _waypoint_bbox(path)
         hrrr_manager = HRRRDatasetManager(self.config.hrrr, bbox=bbox)
@@ -120,10 +133,23 @@ class MachCutoffSimulator:
         sample_w_proj: list[float] = []
         sample_c_eff: list[float] = []
         vertical_profile: AtmosphericVerticalProfile | None = None
+        atmospheric_grid_3d: AtmosphericGrid3D | None = None
 
         for emit_idx, emit_time in enumerate(emission_times):
             state = aircraft.state_at(emit_time)
             dirs_ecef = generate_shock_directions(state, self.config.shock)
+            emit_epoch = emit_time.timestamp()
+            elapsed_window_s = max(0.0, emit_epoch - first_emit_epoch)
+            remaining_window_s = max(0.0, last_emit_epoch - emit_epoch)
+            if emission_window_duration_s > 0.0:
+                window_progress_pct = 100.0 * elapsed_window_s / emission_window_duration_s
+            else:
+                window_progress_pct = 100.0
+            if flight_duration_s > 0.0:
+                flight_progress_pct = 100.0 * np.clip((emit_epoch - flight_start_epoch) / flight_duration_s, 0.0, 1.0)
+            else:
+                flight_progress_pct = 100.0
+            count_progress_pct = 100.0 * (emit_idx + 1) / total_emissions
 
             snap_time = _nearest_snapshot_time(snapshot_times, emit_time)
             if snap_time not in interp_cache:
@@ -170,6 +196,9 @@ class MachCutoffSimulator:
             sample_c.append(float(c0[0]))
             sample_w_proj.append(float(w0[0]))
             sample_c_eff.append(float(ce0[0]))
+            ce0_scalar = float(ce0[0])
+            effective_mach = float(state.speed_mps / max(ce0_scalar, 1e-6))
+            source_mach_cutoff = bool(effective_mach <= 1.0)
 
             if vertical_profile is None:
                 alt_profile = np.linspace(
@@ -214,15 +243,35 @@ class MachCutoffSimulator:
                     effective_sound_speed_mps=np.asarray(ce_prof, dtype=np.float32),
                 )
 
-            field, _ = build_acoustic_grid_field(
-                interp,
-                aircraft_lat_deg=state.lat_deg,
-                aircraft_lon_deg=state.lon_deg,
-                aircraft_alt_m=state.alt_m,
-                aircraft_velocity_ecef_mps=state.velocity_ecef_mps,
-                grid_config=self.config.grid,
-                reference_speed_mps=self.config.aircraft.reference_sound_speed_mps,
-            )
+            field = None
+            if (not source_mach_cutoff) or atmospheric_grid_3d is None:
+                field, field_meta = build_acoustic_grid_field(
+                    interp,
+                    aircraft_lat_deg=state.lat_deg,
+                    aircraft_lon_deg=state.lon_deg,
+                    aircraft_alt_m=state.alt_m,
+                    aircraft_velocity_ecef_mps=state.velocity_ecef_mps,
+                    grid_config=self.config.grid,
+                    reference_speed_mps=self.config.aircraft.reference_sound_speed_mps,
+                )
+                if atmospheric_grid_3d is None:
+                    atmospheric_grid_3d = AtmosphericGrid3D(
+                        emission_time_utc=emit_time,
+                        aircraft_lat_deg=float(state.lat_deg),
+                        aircraft_lon_deg=float(state.lon_deg),
+                        aircraft_alt_m=float(state.alt_m),
+                        lat_grid_deg=np.asarray(field_meta["lat_grid_deg"], dtype=np.float32),
+                        lon_grid_deg=np.asarray(field_meta["lon_grid_deg"], dtype=np.float32),
+                        altitude_m=np.asarray(field_meta["altitude_abs_m"], dtype=np.float32),
+                        temperature_k=np.asarray(field_meta["temperature_k"], dtype=np.float32),
+                        relative_humidity_pct=np.asarray(field_meta["relative_humidity_pct"], dtype=np.float32),
+                        pressure_hpa=np.asarray(field_meta["pressure_hpa"], dtype=np.float32),
+                        u_wind_mps=np.asarray(field_meta["u_wind_mps"], dtype=np.float32),
+                        v_wind_mps=np.asarray(field_meta["v_wind_mps"], dtype=np.float32),
+                        sound_speed_mps=np.asarray(field_meta["sound_speed_mps"], dtype=np.float32),
+                        wind_projection_mps=np.asarray(field_meta["wind_projection_mps"], dtype=np.float32),
+                        effective_sound_speed_mps=np.asarray(field_meta["c_eff_mps"], dtype=np.float32),
+                    )
 
             def _ground_surface(local_pos):
                 p_ecef = enu_to_ecef(state.lat_deg, state.lon_deg, state.alt_m, np.asarray(local_pos, dtype=float))
@@ -235,8 +284,38 @@ class MachCutoffSimulator:
                 aircraft_lon_deg=state.lon_deg,
                 aircraft_alt_m=state.alt_m,
                 aircraft_position_ecef_m=origin_ecef,
+                effective_mach=effective_mach,
+                source_mach_cutoff=source_mach_cutoff,
+                mach_cutoff=source_mach_cutoff,
                 rays=[],
             )
+            snapshot_offset_min = (emit_time - snap_time).total_seconds() / 60.0
+            if source_mach_cutoff:
+                emissions.append(emission_result)
+                print(
+                    "[sim] emission "
+                    f"{emit_idx + 1}/{total_emissions} "
+                    f"(count={count_progress_pct:5.1f}%, window={window_progress_pct:5.1f}%, route={flight_progress_pct:5.1f}%) "
+                    f"time={emit_time.isoformat()} "
+                    f"elapsed={elapsed_window_s / 60.0:7.2f}m remaining={remaining_window_s / 60.0:7.2f}m | "
+                    f"aircraft lat={state.lat_deg:+8.4f} lon={state.lon_deg:+9.4f} alt={state.alt_m:7.1f}m "
+                    f"({state.alt_m * 3.28084:8.1f}ft) speed={state.speed_mps:6.1f}m/s "
+                    f"({state.speed_mps * 1.943844:6.1f}kt) mach={state.mach:.2f} "
+                    f"eff_mach={effective_mach:.3f} | "
+                    f"atmo T={float(t0[0]):6.2f}K RH={float(rh0[0]):5.1f}% p={float(p0[0]):7.2f}hPa "
+                    f"c={float(c0[0]):6.2f}m/s w_proj={float(w0[0]):+6.2f}m/s c_eff={ce0_scalar:6.2f}m/s | "
+                    f"hrrr={snap_time.isoformat()} dt={snapshot_offset_min:+6.2f}m | "
+                    "SOURCE CUT OFF (effective mach <= 1.0), rays=0"
+                )
+                continue
+
+            ground_hit_count = 0
+            ray_point_count = 0
+            terminal_alt_min_m = np.inf
+            terminal_alt_max_m = -np.inf
+
+            if field is None:
+                raise RuntimeError("Acoustic field was not built for supersonic emission")
 
             for ray_idx, d_ecef in enumerate(dirs_ecef):
                 d_local = ecef_to_enu(
@@ -269,6 +348,12 @@ class MachCutoffSimulator:
 
                 ground_hit = bool(traj_geo[-1, 2] <= 0.0)
                 hit_lat_lon = (float(traj_geo[-1, 0]), float(traj_geo[-1, 1])) if ground_hit else None
+                if ground_hit:
+                    ground_hit_count += 1
+                ray_point_count += int(traj_local.shape[0])
+                terminal_alt_m = float(traj_geo[-1, 2])
+                terminal_alt_min_m = min(terminal_alt_min_m, terminal_alt_m)
+                terminal_alt_max_m = max(terminal_alt_max_m, terminal_alt_m)
 
                 emission_result.rays.append(
                     RayResult(
@@ -282,9 +367,30 @@ class MachCutoffSimulator:
                 )
 
             emissions.append(emission_result)
-
-            if emit_idx % 5 == 0:
-                print(f"[sim] emission {emit_idx + 1}/{len(emission_times)} at {emit_time.isoformat()}")
+            n_rays = len(emission_result.rays)
+            emission_result.mach_cutoff = bool(n_rays > 0 and ground_hit_count == 0)
+            ground_hit_pct = (100.0 * ground_hit_count / n_rays) if n_rays else 0.0
+            avg_ray_points = (ray_point_count / n_rays) if n_rays else 0.0
+            if not np.isfinite(terminal_alt_min_m):
+                terminal_alt_min_m = 0.0
+            if not np.isfinite(terminal_alt_max_m):
+                terminal_alt_max_m = 0.0
+            print(
+                "[sim] emission "
+                f"{emit_idx + 1}/{total_emissions} "
+                f"(count={count_progress_pct:5.1f}%, window={window_progress_pct:5.1f}%, route={flight_progress_pct:5.1f}%) "
+                f"time={emit_time.isoformat()} "
+                f"elapsed={elapsed_window_s / 60.0:7.2f}m remaining={remaining_window_s / 60.0:7.2f}m | "
+                f"aircraft lat={state.lat_deg:+8.4f} lon={state.lon_deg:+9.4f} alt={state.alt_m:7.1f}m "
+                f"({state.alt_m * 3.28084:8.1f}ft) speed={state.speed_mps:6.1f}m/s "
+                f"({state.speed_mps * 1.943844:6.1f}kt) mach={state.mach:.2f} eff_mach={effective_mach:.3f} | "
+                f"atmo T={float(t0[0]):6.2f}K RH={float(rh0[0]):5.1f}% p={float(p0[0]):7.2f}hPa "
+                f"c={float(c0[0]):6.2f}m/s w_proj={float(w0[0]):+6.2f}m/s c_eff={ce0_scalar:6.2f}m/s | "
+                f"hrrr={snap_time.isoformat()} dt={snapshot_offset_min:+6.2f}m | "
+                f"rays={n_rays} ground_hits={ground_hit_count} ({ground_hit_pct:5.1f}%) "
+                f"avg_pts={avg_ray_points:6.1f} cutoff={'yes' if emission_result.mach_cutoff else 'no'} "
+                f"terminal_alt=[{terminal_alt_min_m:7.1f},{terminal_alt_max_m:7.1f}]m"
+            )
 
         atmospheric_time_series = None
         if sample_times:
@@ -311,4 +417,5 @@ class MachCutoffSimulator:
             terrain_elevation_m=terrain_elev,
             atmospheric_time_series=atmospheric_time_series,
             atmospheric_vertical_profile=vertical_profile,
+            atmospheric_grid_3d=atmospheric_grid_3d,
         )

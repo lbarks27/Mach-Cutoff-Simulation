@@ -35,7 +35,7 @@ class GridConfig:
 
 @dataclass(slots=True)
 class AircraftConfig:
-    mach: float = 1.6
+    mach: float = 1.05
     constant_altitude_m: float = 16_500.0
     reference_sound_speed_mps: float = 340.29
 
@@ -46,6 +46,7 @@ class ShockConfig:
     rays_per_emission: int = 40
     downward_only: bool = True
     azimuth_offset_deg: float = 0.0
+    direction_reference: str = "earth_down"
 
 
 @dataclass(slots=True)
@@ -75,6 +76,7 @@ class VisualizationConfig:
     output_dir: str = "outputs"
     make_animation: bool = True
     write_html: bool = True
+    include_atmosphere: bool = True
 
 
 @dataclass(slots=True)

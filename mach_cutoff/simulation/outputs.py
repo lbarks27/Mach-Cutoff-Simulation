@@ -27,6 +27,9 @@ class EmissionResult:
     aircraft_lon_deg: float
     aircraft_alt_m: float
     aircraft_position_ecef_m: np.ndarray
+    effective_mach: float | None = None
+    source_mach_cutoff: bool = False
+    mach_cutoff: bool = False
     rays: list[RayResult] = field(default_factory=list)
 
 
@@ -64,6 +67,25 @@ class AtmosphericVerticalProfile:
 
 
 @dataclass(slots=True)
+class AtmosphericGrid3D:
+    emission_time_utc: datetime
+    aircraft_lat_deg: float
+    aircraft_lon_deg: float
+    aircraft_alt_m: float
+    lat_grid_deg: np.ndarray
+    lon_grid_deg: np.ndarray
+    altitude_m: np.ndarray
+    temperature_k: np.ndarray
+    relative_humidity_pct: np.ndarray
+    pressure_hpa: np.ndarray
+    u_wind_mps: np.ndarray
+    v_wind_mps: np.ndarray
+    sound_speed_mps: np.ndarray
+    wind_projection_mps: np.ndarray
+    effective_sound_speed_mps: np.ndarray
+
+
+@dataclass(slots=True)
 class SimulationResult:
     emissions: list[EmissionResult]
     config_dict: dict
@@ -72,6 +94,7 @@ class SimulationResult:
     terrain_elevation_m: np.ndarray | None = None
     atmospheric_time_series: AtmosphericTimeSeries | None = None
     atmospheric_vertical_profile: AtmosphericVerticalProfile | None = None
+    atmospheric_grid_3d: AtmosphericGrid3D | None = None
 
     def all_ground_hits(self):
         lats = []
@@ -94,12 +117,29 @@ class SimulationResult:
             "num_emissions": len(self.emissions),
             "num_rays": int(sum(len(e.rays) for e in self.emissions)),
             "num_ground_hits": int(sum(1 for e in self.emissions for r in e.rays if r.ground_hit)),
+            "num_cutoff_emissions": int(sum(1 for e in self.emissions if e.mach_cutoff)),
+            "num_source_cutoff_emissions": int(sum(1 for e in self.emissions if e.source_mach_cutoff)),
             "config": self.config_dict,
         }
+        summary["cutoff_achieved"] = bool(summary["num_cutoff_emissions"] > 0)
+        summary["full_route_cutoff"] = bool(summary["num_cutoff_emissions"] == summary["num_emissions"])
+        summary["source_cutoff_achieved"] = bool(summary["num_source_cutoff_emissions"] > 0)
+
+        effective_machs = [float(e.effective_mach) for e in self.emissions if e.effective_mach is not None]
+        if effective_machs:
+            summary["effective_mach_min"] = float(np.min(effective_machs))
+            summary["effective_mach_max"] = float(np.max(effective_machs))
+            summary["effective_mach_mean"] = float(np.mean(effective_machs))
+
+        if summary["num_rays"] > 0:
+            summary["ground_hit_fraction"] = float(summary["num_ground_hits"] / summary["num_rays"])
+
         if self.atmospheric_time_series is not None:
             summary["num_atmospheric_samples"] = int(len(self.atmospheric_time_series.emission_times_utc))
         if self.atmospheric_vertical_profile is not None:
             summary["num_atmospheric_profile_levels"] = int(self.atmospheric_vertical_profile.altitude_m.size)
+        if self.atmospheric_grid_3d is not None:
+            summary["atmospheric_grid_shape"] = [int(v) for v in self.atmospheric_grid_3d.temperature_k.shape]
         with path.open("w", encoding="utf-8") as f:
             json.dump(summary, f, indent=2)
 

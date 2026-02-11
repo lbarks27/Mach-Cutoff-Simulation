@@ -12,7 +12,9 @@ This project provides a modular, research-oriented Python simulation for superso
 6. Produces multiple visualization options:
    - Matplotlib (terrain-aware static + GIF animation)
    - Plotly (terrain-aware interactive HTML)
+     - Includes 3D atmospheric overlay (`plotly_atmosphere_3d.html`) with measure toggles and wind vectors
    - PyVista (terrain-aware 3D screenshots + GIF animation)
+   - Atmospheric diagnostics (time-series + vertical profile) in Matplotlib and Plotly
 
 ## Package layout
 
@@ -115,6 +117,8 @@ python3 -m mach_cutoff.cli \
 - `outputs/simulation_summary.json`
 - `outputs/simulation_hits.npz`
 - Visualization files depending on enabled backends
+  - Plotly may include `plotly_atmosphere_3d.html` for gridded atmosphere overlays
+  - Includes atmospheric diagnostics when `visualization.include_atmosphere=true`
 
 ## Research/experiment knobs
 
@@ -126,6 +130,12 @@ Primary tunables are in `config_example.json`:
 - Shock source density: `shock.*`
 - Integrator controls: `raytrace.*`
 - Runtime trial slicing: `runtime.*`
+- Visualization outputs/toggles: `visualization.*` (including `visualization.include_atmosphere`)
+
+Shock direction reference toggle:
+
+- `shock.direction_reference = "earth_down"`: earth-relative cone (axis aligned with local vertical down)
+- `shock.direction_reference = "aircraft_aft"`: legacy aircraft-relative aft cone (behind aircraft)
 
 For quick trials:
 

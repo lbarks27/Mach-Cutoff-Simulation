@@ -14,9 +14,9 @@
     "half_width_north_m": 180000.0,
     "min_altitude_m": -500.0,
     "max_altitude_m": 28000.0,
-    "nx": 32,
-    "ny": 32,
-    "nz": 24,
+    "nx": 80,
+    "ny": 80,
+    "nz": 56,
     "gradient_step_m": 50.0,
     "wind_projection_mode": "heading"
   },
@@ -26,11 +26,11 @@
     "reference_sound_speed_mps": 340.29
   },
   "shock": {
-    "emission_interval_s": 20.0,
-    "rays_per_emission": 8,
+    "emission_interval_s": 60.0,
+    "rays_per_emission": 48,
     "downward_only": true,
     "azimuth_offset_deg": 0.0,
-    "direction_reference": "earth_down"
+    "direction_reference": "aircraft_aft"
   },
   "raytrace": {
     "ds_m": 300.0,
@@ -44,14 +44,14 @@
   "runtime": {
     "start_time_iso": null,
     "end_time_iso": null,
-    "max_emissions": 1,
+    "max_emissions": null,
     "ray_batch_size": 0
   },
   "visualization": {
-    "enable_matplotlib": false,
-    "enable_plotly": false,
-    "enable_pyvista": false,
-    "output_dir": "outputs",
+    "enable_matplotlib": true,
+    "enable_plotly": true,
+    "enable_pyvista": true,
+    "output_dir": "outputs_test",
     "make_animation": true,
     "write_html": true,
     "include_atmosphere": true

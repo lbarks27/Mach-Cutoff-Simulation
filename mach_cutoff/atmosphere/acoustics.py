@@ -215,7 +215,7 @@ def build_acoustic_grid_field(
     )
     velocity_enu = np.asarray(velocity_enu, dtype=np.float32)
 
-    _, _, c_eff = compute_effective_sound_speed_mps(
+    c, w_proj, c_eff = compute_effective_sound_speed_mps(
         temp,
         p,
         rh,
@@ -227,6 +227,8 @@ def build_acoustic_grid_field(
 
     n_cols = np.clip(reference_speed_mps / c_eff, 0.5, 2.0).astype(np.float32)
     n_grid = n_cols.reshape(grid_config.ny, grid_config.nx, grid_config.nz).transpose(1, 0, 2)
+    lat_grid = lat_xy.reshape(grid_config.ny, grid_config.nx).transpose(1, 0).astype(np.float32)
+    lon_grid = lon_xy.reshape(grid_config.ny, grid_config.nx).transpose(1, 0).astype(np.float32)
 
     grad_x, grad_y, grad_z = np.gradient(
         n_grid,
@@ -251,6 +253,15 @@ def build_acoustic_grid_field(
         "x_m": x,
         "y_m": y,
         "z_rel_m": z_rel,
+        "lat_grid_deg": lat_grid,
+        "lon_grid_deg": lon_grid,
+        "temperature_k": temp.reshape(grid_config.ny, grid_config.nx, grid_config.nz).transpose(1, 0, 2).astype(np.float32),
+        "relative_humidity_pct": rh.reshape(grid_config.ny, grid_config.nx, grid_config.nz).transpose(1, 0, 2).astype(np.float32),
+        "pressure_hpa": p.reshape(grid_config.ny, grid_config.nx, grid_config.nz).transpose(1, 0, 2).astype(np.float32),
+        "u_wind_mps": u.reshape(grid_config.ny, grid_config.nx, grid_config.nz).transpose(1, 0, 2).astype(np.float32),
+        "v_wind_mps": v.reshape(grid_config.ny, grid_config.nx, grid_config.nz).transpose(1, 0, 2).astype(np.float32),
+        "sound_speed_mps": c.reshape(grid_config.ny, grid_config.nx, grid_config.nz).transpose(1, 0, 2).astype(np.float32),
+        "wind_projection_mps": w_proj.reshape(grid_config.ny, grid_config.nx, grid_config.nz).transpose(1, 0, 2).astype(np.float32),
         "n_grid": n_grid,
         "c_eff_mps": c_eff.reshape(grid_config.ny, grid_config.nx, grid_config.nz).transpose(1, 0, 2),
     }

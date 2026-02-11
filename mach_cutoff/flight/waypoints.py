@@ -83,6 +83,9 @@ class FlightPath:
 
         ecef = [geodetic_to_ecef(wp.lat_deg, wp.lon_deg, wp.alt_m) for wp in self.waypoints]
         self._ecef = np.asarray(ecef, dtype=float)
+        self._segment_vectors = self._ecef[1:] - self._ecef[:-1]
+        self._segment_lengths_m = np.linalg.norm(self._segment_vectors, axis=1)
+        self._cum_length_m = np.concatenate([[0.0], np.cumsum(self._segment_lengths_m)])
 
     @property
     def start_time(self) -> datetime:
@@ -96,6 +99,10 @@ class FlightPath:
     def duration_s(self) -> float:
         return float(self._times[-1] - self._times[0])
 
+    @property
+    def total_length_m(self) -> float:
+        return float(self._cum_length_m[-1])
+
     def _segment_index(self, t_epoch: float) -> int:
         if t_epoch <= self._times[0]:
             return 0
@@ -103,6 +110,14 @@ class FlightPath:
             return len(self._times) - 2
         idx = int(np.searchsorted(self._times, t_epoch, side="right") - 1)
         return max(0, min(idx, len(self._times) - 2))
+
+    def _segment_index_for_distance(self, distance_m: float) -> int:
+        if distance_m <= 0.0:
+            return 0
+        if distance_m >= self._cum_length_m[-1]:
+            return len(self._cum_length_m) - 2
+        idx = int(np.searchsorted(self._cum_length_m, distance_m, side="right") - 1)
+        return max(0, min(idx, len(self._cum_length_m) - 2))
 
     def state_at(self, time_utc: datetime):
         t = time_utc.timestamp()
@@ -131,14 +146,56 @@ class FlightPath:
             "segment_fraction": float(f),
         }
 
-    def sample_times(self, step_s: float, start: datetime | None = None, end: datetime | None = None):
+    def state_at_distance(self, distance_m: float):
+        s = float(np.clip(distance_m, 0.0, self._cum_length_m[-1]))
+        i = self._segment_index_for_distance(s)
+
+        s0 = self._cum_length_m[i]
+        s1 = self._cum_length_m[i + 1]
+        f = 0.0 if s1 == s0 else np.clip((s - s0) / (s1 - s0), 0.0, 1.0)
+
+        p0 = self._ecef[i]
+        p1 = self._ecef[i + 1]
+        p = (1.0 - f) * p0 + f * p1
+
+        v = self._segment_vectors[i]
+        v_norm = np.linalg.norm(v)
+        tangent = v / v_norm if v_norm > 0.0 else np.array([1.0, 0.0, 0.0], dtype=float)
+
+        lat, lon, alt = ecef_to_geodetic(p[0], p[1], p[2])
+        return {
+            "ecef_m": p,
+            "lat_deg": float(lat),
+            "lon_deg": float(lon),
+            "alt_m": float(alt),
+            "tangent_ecef": tangent,
+            "segment_index": i,
+            "segment_fraction": float(f),
+            "distance_m": s,
+        }
+
+    def sample_times(
+        self,
+        step_s: float,
+        start: datetime | None = None,
+        end: datetime | None = None,
+        *,
+        clamp_to_path_bounds: bool = True,
+    ):
         if step_s <= 0:
             raise ValueError("step_s must be positive")
 
-        start_epoch = self._times[0] if start is None else max(self._times[0], start.timestamp())
-        end_epoch = self._times[-1] if end is None else min(self._times[-1], end.timestamp())
+        start_epoch = self._times[0] if start is None else float(start.timestamp())
+        end_epoch = self._times[-1] if end is None else float(end.timestamp())
+        if clamp_to_path_bounds:
+            start_epoch = max(self._times[0], start_epoch)
+            end_epoch = min(self._times[-1], end_epoch)
         if end_epoch < start_epoch:
             return []
 
-        values = np.arange(start_epoch, end_epoch + 1e-9, step_s)
-        return [datetime.fromtimestamp(t, tz=timezone.utc) for t in values]
+        values = np.arange(start_epoch, end_epoch + 1e-9, step_s, dtype=float)
+        if values.size == 0:
+            values = np.array([start_epoch], dtype=float)
+        if end_epoch - values[-1] > 1e-6:
+            values = np.append(values, end_epoch)
+        return [datetime.fromtimestamp(float(t), tz=timezone.utc) for t in values]
