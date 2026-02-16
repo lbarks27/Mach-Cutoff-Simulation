@@ -1,0 +1,58 @@
+{
+  "type": "FeatureCollection",
+  "name": "mach_cutoff_geospatial_context",
+  "crs": {
+    "type": "name",
+    "properties": {
+      "name": "EPSG:4326"
+    }
+  },
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "kind": "ray",
+        "emission_index": 0,
+        "ray_id": 7,
+        "ground_hit": true,
+        "emission_time_utc": "2026-02-10T18:00:00+00:00"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [
+            -118.0,
+            34.0,
+            16000.0
+          ],
+          [
+            -117.97,
+            33.99,
+            9000.0
+          ],
+          [
+            -117.94,
+            33.97,
+            0.0
+          ]
+        ]
+      }
+    },
+    {
+      "type": "Feature",
+      "properties": {
+        "kind": "ground_hit",
+        "index": 0,
+        "time_utc": "2026-02-10T18:00:00+00:00"
+      },
+      "geometry": {
+        "type": "Point",
+        "coordinates": [
+          -117.94,
+          33.97,
+          0.0
+        ]
+      }
+    }
+  ]
+}

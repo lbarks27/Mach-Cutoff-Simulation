@@ -1,0 +1,83 @@
+{
+  "enabled": true,
+  "integration_dt_s": 1.0,
+  "max_wind_mps": 120.0,
+  "lateral": {
+    "lookahead_time_s": 45.0,
+    "min_lookahead_m": 3000.0,
+    "max_lookahead_m": 55000.0,
+    "terminal_lookahead_scale": 0.45,
+    "cross_track_gain": 0.00004
+  },
+  "vertical": {
+    "altitude_time_constant_s": 80.0,
+    "climb_target_altitude_m": 16500.0,
+    "terminal_altitude_blend_distance_m": 60000.0
+  },
+  "speed": {
+    "target_mach": 1.7,
+    "min_mach": 1.01,
+    "max_mach": 3.0,
+    "effective_mach_target": 1.03,
+    "effective_mach_gain": 0.35,
+    "speed_time_constant_s": 20.0
+  },
+  "constraints": {
+    "max_bank_deg": 35.0,
+    "max_pitch_deg": 18.0,
+    "max_turn_rate_deg_s": 3.5,
+    "max_pitch_rate_deg_s": 2.5,
+    "max_longitudinal_accel_mps2": 4.0,
+    "min_speed_mps": 220.0,
+    "max_speed_mps": 490.0,
+    "min_altitude_m": 0.0,
+    "max_altitude_m": 20000.0,
+    "max_climb_rate_mps": 30.0,
+    "max_descent_rate_mps": 35.0
+  },
+  "mode_switch": {
+    "enable_takeoff_climb": true,
+    "enable_terminal": true,
+    "takeoff_distance_m": 35000.0,
+    "climb_completion_altitude_m": 14000.0,
+    "terminal_distance_m": 50000.0,
+    "abort_cross_track_m": 100000.0,
+    "abort_recovery_cross_track_m": 40000.0,
+    "abort_min_altitude_m": 50.0
+  },
+  "boom_avoidance": {
+    "enable_ground_hit_feedback": true,
+    "ground_hit_fraction_threshold": 0.05,
+    "altitude_gain_m_per_hit_fraction": 8000.0,
+    "altitude_bias_decay_m_per_step": 150.0,
+    "max_altitude_bias_m": 6000.0,
+    "mach_reduction_per_hit_fraction": 0.08,
+    "source_cutoff_recovery_mach_step": 0.004,
+    "optimizer": {
+      "enabled": true,
+      "horizon_steps": 8,
+      "horizon_step_s": 20.0,
+      "candidate_altitude_offsets_m": [-1500.0, -900.0, -450.0, 0.0, 450.0, 900.0, 1500.0, 2200.0],
+      "candidate_mach_offsets": [-0.06, -0.04, -0.02, 0.0, 0.02, 0.04],
+      "effective_mach_ratio_smoothing": 0.25,
+      "ground_hit_fraction_smoothing": 0.35,
+      "source_cutoff_smoothing": 0.4,
+      "effective_mach_margin": 1.015,
+      "effective_mach_altitude_gain_per_km": 0.015,
+      "ground_risk_decay": 0.82,
+      "ground_risk_mach_gain": 1.4,
+      "ground_risk_altitude_relief_per_km": 0.2,
+      "ground_risk_track_gain": 0.25,
+      "weight_ground_risk": 7.0,
+      "weight_cutoff_risk": 10.0,
+      "weight_tracking": 1.0,
+      "weight_altitude_deviation": 0.6,
+      "weight_mach_deviation": 2.0,
+      "weight_terminal_altitude_bias": 1.2,
+      "max_altitude_adjustment_m": 3500.0,
+      "max_altitude_step_m_per_cycle": 400.0,
+      "max_mach_adjustment": 0.06,
+      "max_mach_step_per_cycle": 0.015
+    }
+  }
+}

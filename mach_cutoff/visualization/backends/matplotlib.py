@@ -7,6 +7,12 @@ from pathlib import Path
 import numpy as np
 
 from ...simulation.outputs import SimulationResult
+from ..basemap import (
+    MAP_STYLE_TOPOGRAPHIC,
+    fetch_basemap_tile,
+    normalize_map_style,
+    terrain_matplotlib_cmap,
+)
 from ..terrain import downsample_terrain_grid, terrain_grid_from_result
 
 
@@ -18,6 +24,7 @@ def render_matplotlib_bundle(
     max_rays_per_emission: int = 24,
     include_atmosphere: bool = True,
     show_window: bool = False,
+    map_style: str = MAP_STYLE_TOPOGRAPHIC,
 ):
     try:
         import matplotlib.pyplot as plt
@@ -30,6 +37,8 @@ def render_matplotlib_bundle(
     generated = {}
     figures_to_show = []
     animations_to_show = []
+    map_style = normalize_map_style(map_style)
+    terrain_cmap = terrain_matplotlib_cmap(map_style)
 
     # 3D static view
     fig = plt.figure(figsize=(12, 8))
@@ -61,7 +70,7 @@ def render_matplotlib_bundle(
         lon_max = max(lon_max, float(np.max(t_lon)))
         lat_min = min(lat_min, float(np.min(t_lat)))
         lat_max = max(lat_max, float(np.max(t_lat)))
-        ax.plot_surface(t_lon, t_lat, terrain_km, cmap="terrain", linewidth=0, antialiased=False, alpha=0.5)
+        ax.plot_surface(t_lon, t_lat, terrain_km, cmap=terrain_cmap, linewidth=0, antialiased=False, alpha=0.5)
 
     ax.plot(flight_lons, flight_lats, flight_alt_km, color="black", linewidth=2.0, label="Flight")
 
@@ -109,9 +118,50 @@ def render_matplotlib_bundle(
     # Ground-hit map
     fig2, ax2 = plt.subplots(figsize=(10, 6))
     lat_hits, lon_hits, _ = result.all_ground_hits()
+    lon_candidates = list(flight_lons)
+    lat_candidates = list(flight_lats)
+    if lon_hits.size:
+        lon_candidates.extend(lon_hits.tolist())
+    if lat_hits.size:
+        lat_candidates.extend(lat_hits.tolist())
     if terrain_2d is not None:
         t_lat2, t_lon2, t_elev2 = terrain_2d
-        terrain_plot = ax2.contourf(t_lon2, t_lat2, t_elev2, levels=28, cmap="terrain", alpha=0.5)
+        lon_candidates.extend([float(np.min(t_lon2)), float(np.max(t_lon2))])
+        lat_candidates.extend([float(np.min(t_lat2)), float(np.max(t_lat2))])
+
+    drew_remote_basemap = False
+    if map_style != MAP_STYLE_TOPOGRAPHIC and lon_candidates and lat_candidates:
+        basemap = fetch_basemap_tile(
+            lon_min=min(lon_candidates),
+            lon_max=max(lon_candidates),
+            lat_min=min(lat_candidates),
+            lat_max=max(lat_candidates),
+            map_style=map_style,
+        )
+        if basemap is not None:
+            ax2.imshow(
+                basemap.image_rgba,
+                extent=basemap.extent_lon_lat,
+                origin="upper",
+                interpolation="bilinear",
+                zorder=0,
+            )
+            ax2.text(
+                0.01,
+                0.01,
+                basemap.attribution,
+                transform=ax2.transAxes,
+                fontsize=7,
+                color="0.2",
+                ha="left",
+                va="bottom",
+                bbox=dict(facecolor="white", alpha=0.65, edgecolor="none", boxstyle="round,pad=0.2"),
+            )
+            drew_remote_basemap = True
+
+    if terrain_2d is not None and not drew_remote_basemap:
+        t_lat2, t_lon2, t_elev2 = terrain_2d
+        terrain_plot = ax2.contourf(t_lon2, t_lat2, t_elev2, levels=28, cmap=terrain_cmap, alpha=0.5)
         cbar = fig2.colorbar(terrain_plot, ax=ax2, pad=0.02, fraction=0.05)
         cbar.set_label("Terrain elevation (m MSL)")
     if lat_hits.size:
@@ -121,6 +171,7 @@ def render_matplotlib_bundle(
     ax2.set_ylabel("Latitude (deg)")
     ax2.set_title("Ground Intersection Footprint")
     ax2.grid(True, alpha=0.25)
+    ax2.set_aspect("equal", adjustable="box")
     ax2.legend(loc="best")
 
     pg = out_dir / "matplotlib_ground_hits.png"
@@ -314,7 +365,7 @@ def render_matplotlib_bundle(
             lat_min = min(lat_min, float(np.min(t_lat)))
             lat_max = max(lat_max, float(np.max(t_lat)))
             alt_max = max(alt_max, float(np.max(terrain_km)))
-            ax4.plot_surface(t_lon, t_lat, terrain_km, cmap="terrain", linewidth=0, antialiased=False, alpha=0.5)
+            ax4.plot_surface(t_lon, t_lat, terrain_km, cmap=terrain_cmap, linewidth=0, antialiased=False, alpha=0.5)
 
         ax4.set_xlim(lon_min - 0.5, lon_max + 0.5)
         ax4.set_ylim(lat_min - 0.5, lat_max + 0.5)

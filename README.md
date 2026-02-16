@@ -19,11 +19,13 @@ This project provides a modular, research-oriented Python simulation for superso
 ## Package layout
 
 - `mach_cutoff/config.py`: configurable experiment model
+- `mach_cutoff/guidance_config.py`: dedicated guidance config model/loader
 - `mach_cutoff/core/constants.py`: physical constants
 - `mach_cutoff/core/geodesy.py`: WGS84 transforms
 - `mach_cutoff/core/raytrace.py`: adaptive ray integrator
 - `mach_cutoff/flight/waypoints.py`: waypoint ingestion and interpolation
 - `mach_cutoff/flight/aircraft.py`: point-mass aircraft + shock ray generation
+- `mach_cutoff/flight/guidance.py`: waypoint guidance + wind-aware dynamics
 - `mach_cutoff/atmosphere/hrrr.py`: HRRR file selection/download/load
 - `mach_cutoff/atmosphere/interpolation.py`: HRRR interpolation
 - `mach_cutoff/atmosphere/acoustics.py`: sound-speed + effective-index field
@@ -80,6 +82,7 @@ Use a JSON array or object with `waypoints` key.
 mach-cutoff \
   --waypoints examples/waypoints_example.json \
   --config examples/config_example.json \
+  --guidance-config examples/guidance_example.json \
   --output-dir outputs
 ```
 
@@ -91,6 +94,7 @@ Or without installing script:
 python3 -m mach_cutoff.cli \
   --waypoints examples/waypoints_example.json \
   --config examples/config_example.json \
+  --guidance-config examples/guidance_example.json \
   --output-dir outputs
 ```
 
@@ -100,6 +104,7 @@ Quick smoke run (validated locally on this machine):
 python3 -m mach_cutoff.cli \
   --waypoints examples/waypoints_example.json \
   --config examples/config_smoke.json \
+  --guidance-config examples/guidance_example.json \
   --output-dir outputs_smoke \
   --no-animation
 ```
@@ -111,14 +116,43 @@ python3 -m mach_cutoff.cli \
 - `--skip-pyvista`
 - `--no-animation`
 - `--interactive` (opens live windows for matplotlib/pyvista and opens plotly 3D HTML in browser)
+- `--map-style {topographic,road,satellite}` (switch map/basemap style across visualization outputs)
+- `--guidance-config <path>` (load dedicated guidance dynamics/controller settings)
+
+## Guidance config (phase 1)
+
+Guidance is configured separately from the main experiment config to keep control-law iteration isolated.
+
+- Example file: `examples/guidance_example.json`
+- If `--guidance-config` is omitted, built-in defaults are used (guidance still enabled).
+- Loader accepts either a direct object or `{ "guidance": { ... } }`
+- Current mode set includes: `takeoff_climb`, `enroute`, `terminal`, `abort_failsafe`
+- `boom_avoidance.optimizer` enables phase-2 predictive candidate search (Mach/altitude) with configurable risk/cost weights.
+- Guidance feeds back:
+  - effective Mach (`source_mach_cutoff`)
+  - sonic-boom ground-hit fraction from the previous emission
 
 ## Outputs
 
 - `outputs/simulation_summary.json`
 - `outputs/simulation_hits.npz`
+- `outputs/google_earth_overlay.kml` (open in Google Earth for true globe-map overlay)
+- Summary/NPZ include guidance diagnostics (mode counts, cross-track statistics, command channels, optimizer cost/risk predictions) when guidance is enabled.
 - Visualization files depending on enabled backends
   - Plotly may include `plotly_atmosphere_3d.html` for gridded atmosphere overlays
+  - Plotly includes `plotly_globe.html` for interactive globe-based inspection of flight, rays, and ground hits
   - Includes atmospheric diagnostics when `visualization.include_atmosphere=true`
+
+### Google Earth overlay
+
+Each run writes `google_earth_overlay.kml` in the output directory. This KML contains:
+
+- Aircraft flight track (absolute altitude)
+- Sampled shock-ray trajectories (absolute altitude)
+- Ground-hit markers (if any)
+
+Recommended viewer: Google Earth Pro (desktop) or Google Earth Web.  
+Apple Maps does not provide a general KML import workflow for this type of 3D overlay.
 
 ## Research/experiment knobs
 
@@ -130,12 +164,13 @@ Primary tunables are in `config_example.json`:
 - Shock source density: `shock.*`
 - Integrator controls: `raytrace.*`
 - Runtime trial slicing: `runtime.*`
-- Visualization outputs/toggles: `visualization.*` (including `visualization.include_atmosphere`)
+- Visualization outputs/toggles: `visualization.*` (including `visualization.include_atmosphere`, `visualization.map_style`)
 
 Shock direction reference toggle:
 
 - `shock.direction_reference = "earth_down"`: earth-relative cone (axis aligned with local vertical down)
-- `shock.direction_reference = "aircraft_aft"`: legacy aircraft-relative aft cone (behind aircraft)
+- `shock.direction_reference = "aircraft_forward"`: aircraft-relative forward cone (ahead of aircraft, recommended default)
+- `shock.direction_reference = "aircraft_aft"`: aircraft-relative aft cone (behind aircraft)
 
 For quick trials:
 
@@ -162,7 +197,7 @@ Default behavior uses hourly analysis snapshots nearest to each emission time.
 
 ## Modeling assumptions (current)
 
-- Aircraft is point-mass with constant Mach and constant altitude.
+- Aircraft is a point-mass with 3D waypoint guidance and simple wind-aware kinematics.
 - Shock rays are generated as cone-distributed wavefront normals.
 - Effective-index field is scalar and uses a configurable wind projection approximation.
 - Atmosphere sampling is nearest-horizontal + linear-vertical interpolation.

@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "coordinate_frame": "ENU",
+  "units": "meters",
+  "origin_from_data": false,
+  "origin_geodetic": {
+    "lat_deg": 0.0,
+    "lon_deg": 0.0,
+    "alt_m": 0.0
+  },
+  "counts": {
+    "emissions": 0,
+    "rays_total": 0,
+    "rays_exported": 0,
+    "ground_hits": 0,
+    "flight_points": 0,
+    "terrain_grid_ny": 0,
+    "terrain_grid_nx": 0,
+    "terrain_vertices_written": 0,
+    "terrain_faces_written": 0,
+    "flight_polylines_written": 0,
+    "ray_polylines_written": 0,
+    "ground_points_written": 0
+  },
+  "limits": {
+    "max_rays_per_emission": 20,
+    "max_points_per_ray": 220,
+    "max_geojson_rays": 400,
+    "max_geojson_ground_hits": 2000,
+    "max_terrain_points_per_axis": 240
+  },
+  "files": {
+    "flight_path_obj": "flight_path.obj",
+    "shock_rays_obj": "shock_rays.obj",
+    "ground_hits_obj": "ground_hits.obj",
+    "terrain_obj": "terrain.obj",
+    "geospatial_context_geojson": "geospatial_context.geojson",
+    "blender_import_script": "import_in_blender.py"
+  }
+}

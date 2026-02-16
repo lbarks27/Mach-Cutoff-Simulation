@@ -115,13 +115,16 @@ def generate_shock_directions(
     if mode in {"earth_down", "earth"}:
         _, _, up = enu_basis(aircraft_state.lat_deg, aircraft_state.lon_deg)
         axis = -up
-    elif mode in {"aircraft_aft", "aircraft", "legacy"}:
+    elif mode in {"aircraft_forward", "aircraft", "legacy"}:
+        vel_axis = aircraft_state.velocity_ecef_mps / np.linalg.norm(aircraft_state.velocity_ecef_mps)
+        axis = vel_axis
+    elif mode in {"aircraft_aft"}:
         vel_axis = aircraft_state.velocity_ecef_mps / np.linalg.norm(aircraft_state.velocity_ecef_mps)
         axis = -vel_axis
     else:
         raise ValueError(
             f"Unsupported shock.direction_reference '{shock_config.direction_reference}'. "
-            "Use 'earth_down' or 'aircraft_aft'."
+            "Use 'earth_down', 'aircraft_forward', or 'aircraft_aft'."
         )
 
     axis, b1, b2 = _orthonormal_basis_from_axis(axis)

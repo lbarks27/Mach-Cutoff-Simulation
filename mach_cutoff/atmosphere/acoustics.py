@@ -118,6 +118,51 @@ def _manual_trilinear(grid_x, grid_y, grid_z, values, point):
     return float(c0 * (1.0 - wz) + c1 * wz)
 
 
+def _manual_trilinear_multi(
+    grid_x: np.ndarray,
+    grid_y: np.ndarray,
+    grid_z: np.ndarray,
+    value_grids: tuple[np.ndarray, ...],
+    point: np.ndarray,
+) -> np.ndarray:
+    x, y, z = point
+
+    def locate(grid, q):
+        if q <= grid[0]:
+            return 0, 1, 0.0
+        if q >= grid[-1]:
+            return len(grid) - 2, len(grid) - 1, 1.0
+        i1 = int(np.searchsorted(grid, q, side="right"))
+        i0 = i1 - 1
+        w = (q - grid[i0]) / (grid[i1] - grid[i0])
+        return i0, i1, float(w)
+
+    x0, x1, wx = locate(grid_x, x)
+    y0, y1, wy = locate(grid_y, y)
+    z0, z1, wz = locate(grid_z, z)
+
+    out = np.empty(len(value_grids), dtype=float)
+    for i, values in enumerate(value_grids):
+        c000 = values[x0, y0, z0]
+        c001 = values[x0, y0, z1]
+        c010 = values[x0, y1, z0]
+        c011 = values[x0, y1, z1]
+        c100 = values[x1, y0, z0]
+        c101 = values[x1, y0, z1]
+        c110 = values[x1, y1, z0]
+        c111 = values[x1, y1, z1]
+
+        c00 = c000 * (1.0 - wx) + c100 * wx
+        c01 = c001 * (1.0 - wx) + c101 * wx
+        c10 = c010 * (1.0 - wx) + c110 * wx
+        c11 = c011 * (1.0 - wx) + c111 * wx
+
+        c0 = c00 * (1.0 - wy) + c10 * wy
+        c1 = c01 * (1.0 - wy) + c11 * wy
+        out[i] = c0 * (1.0 - wz) + c1 * wz
+    return out
+
+
 @dataclass(slots=True)
 class AcousticGridField:
     x_m: np.ndarray
@@ -128,10 +173,7 @@ class AcousticGridField:
     grad_y: np.ndarray
     grad_z: np.ndarray
     domain_bounds: np.ndarray = field(init=False, repr=False)
-    _interp: object = field(init=False, default=None, repr=False)
-    _gx_interp: object = field(init=False, default=None, repr=False)
-    _gy_interp: object = field(init=False, default=None, repr=False)
-    _gz_interp: object = field(init=False, default=None, repr=False)
+    _ng_interp: object = field(init=False, default=None, repr=False)
 
     def __post_init__(self):
         self.domain_bounds = np.array(
@@ -147,31 +189,33 @@ class AcousticGridField:
             from scipy.interpolate import RegularGridInterpolator
 
             opts = {"bounds_error": False, "fill_value": None}
-            self._interp = RegularGridInterpolator((self.x_m, self.y_m, self.z_m), self.n_grid, **opts)
-            self._gx_interp = RegularGridInterpolator((self.x_m, self.y_m, self.z_m), self.grad_x, **opts)
-            self._gy_interp = RegularGridInterpolator((self.x_m, self.y_m, self.z_m), self.grad_y, **opts)
-            self._gz_interp = RegularGridInterpolator((self.x_m, self.y_m, self.z_m), self.grad_z, **opts)
+            stacked = np.stack([self.n_grid, self.grad_x, self.grad_y, self.grad_z], axis=-1)
+            self._ng_interp = RegularGridInterpolator((self.x_m, self.y_m, self.z_m), stacked, **opts)
         except Exception:
-            self._interp = None
+            self._ng_interp = None
+
+    def n_and_grad(self, xyz_local_m: np.ndarray) -> tuple[float, np.ndarray]:
+        p = np.asarray(xyz_local_m, dtype=float).reshape(-1)
+        if self._ng_interp is not None:
+            values = self._ng_interp(p[None, :])[0]
+            return float(values[0]), np.array(values[1:4], dtype=float)
+
+        values = _manual_trilinear_multi(
+            self.x_m,
+            self.y_m,
+            self.z_m,
+            (self.n_grid, self.grad_x, self.grad_y, self.grad_z),
+            p,
+        )
+        return float(values[0]), values[1:4]
 
     def n(self, xyz_local_m: np.ndarray) -> float:
-        p = np.asarray(xyz_local_m, dtype=float).reshape(-1)
-        if self._interp is not None:
-            return float(self._interp(p[None, :])[0])
-        return _manual_trilinear(self.x_m, self.y_m, self.z_m, self.n_grid, p)
+        n_value, _ = self.n_and_grad(xyz_local_m)
+        return n_value
 
     def grad_n(self, xyz_local_m: np.ndarray) -> np.ndarray:
-        p = np.asarray(xyz_local_m, dtype=float).reshape(-1)
-        if self._gx_interp is not None:
-            gx = float(self._gx_interp(p[None, :])[0])
-            gy = float(self._gy_interp(p[None, :])[0])
-            gz = float(self._gz_interp(p[None, :])[0])
-            return np.array([gx, gy, gz], dtype=float)
-
-        gx = _manual_trilinear(self.x_m, self.y_m, self.z_m, self.grad_x, p)
-        gy = _manual_trilinear(self.x_m, self.y_m, self.z_m, self.grad_y, p)
-        gz = _manual_trilinear(self.x_m, self.y_m, self.z_m, self.grad_z, p)
-        return np.array([gx, gy, gz], dtype=float)
+        _, grad = self.n_and_grad(xyz_local_m)
+        return grad
 
 
 def build_acoustic_grid_field(

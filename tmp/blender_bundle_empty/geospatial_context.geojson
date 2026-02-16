@@ -1,0 +1,11 @@
+{
+  "type": "FeatureCollection",
+  "name": "mach_cutoff_geospatial_context",
+  "crs": {
+    "type": "name",
+    "properties": {
+      "name": "EPSG:4326"
+    }
+  },
+  "features": []
+}

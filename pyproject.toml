@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mach-cutoff-sim"
-version = "0.1.1"
+version = "0.2.0"
 description = "Experimental Mach cutoff simulation with HRRR-driven acoustic ray tracing"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -15,6 +15,7 @@ dependencies = [
 [project.optional-dependencies]
 core = [
   "scipy>=1.10",
+  "numba>=0.59",
 ]
 hrrr = [
   "scipy>=1.10",
@@ -30,6 +31,7 @@ viz = [
 ]
 all = [
   "scipy>=1.10",
+  "numba>=0.59",
   "xarray>=2024.1",
   "cfgrib>=0.9.14",
   "s3fs>=2024.2",

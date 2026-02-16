@@ -30,7 +30,7 @@
     "rays_per_emission": 28,
     "downward_only": true,
     "azimuth_offset_deg": 0.0,
-    "direction_reference": "earth_down"
+    "direction_reference": "aircraft_forward"
   },
   "raytrace": {
     "ds_m": 300.0,
@@ -54,6 +54,7 @@
     "output_dir": "outputs",
     "make_animation": true,
     "write_html": true,
-    "include_atmosphere": true
+    "include_atmosphere": true,
+    "map_style": "topographic"
   }
 }

@@ -6,7 +6,15 @@ from pathlib import Path
 
 import numpy as np
 
+from ...core.geodesy import geodetic_to_ecef
 from ...simulation.outputs import SimulationResult
+from ..basemap import (
+    MAP_STYLE_TOPOGRAPHIC,
+    fetch_basemap_tile,
+    normalize_map_style,
+    rgba_to_png_data_uri,
+    terrain_plotly_colorscale,
+)
 from ..terrain import downsample_terrain_grid, terrain_grid_from_result
 
 
@@ -18,6 +26,7 @@ def render_plotly_bundle(
     max_rays_per_emission: int = 24,
     include_atmosphere: bool = True,
     open_browser: bool = False,
+    map_style: str = MAP_STYLE_TOPOGRAPHIC,
 ):
     try:
         import plotly.graph_objects as go
@@ -28,6 +37,8 @@ def render_plotly_bundle(
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     generated = {}
+    map_style = normalize_map_style(map_style)
+    terrain_colorscale = terrain_plotly_colorscale(map_style)
 
     flight_lats = [e.aircraft_lat_deg for e in result.emissions]
     flight_lons = [e.aircraft_lon_deg for e in result.emissions]
@@ -60,7 +71,7 @@ def render_plotly_bundle(
                 x=t_lon,
                 y=t_lat,
                 z=t_elev,
-                colorscale="Earth",
+                colorscale=terrain_colorscale,
                 opacity=0.55,
                 name="Terrain",
                 showscale=True,
@@ -131,11 +142,167 @@ def render_plotly_bundle(
     elif open_browser:
         fig3d.show()
 
-    # Ground hits
+    # Interactive globe figure (ECEF)
+    globe_fig = go.Figure()
+    globe_lats = np.linspace(-90.0, 90.0, 90)
+    globe_lons = np.linspace(-180.0, 180.0, 180)
+    globe_lon_grid, globe_lat_grid = np.meshgrid(globe_lons, globe_lats)
+    globe_alt = np.zeros_like(globe_lat_grid)
+    globe_xyz = geodetic_to_ecef(globe_lat_grid, globe_lon_grid, globe_alt)
+    globe_fig.add_trace(
+        go.Surface(
+            x=globe_xyz[..., 0],
+            y=globe_xyz[..., 1],
+            z=globe_xyz[..., 2],
+            surfacecolor=globe_lat_grid,
+            colorscale=[
+                [0.0, "#2d6a8b"],
+                [0.3, "#5f8f5d"],
+                [0.5, "#8eaa72"],
+                [0.7, "#c7bb8a"],
+                [1.0, "#f2f0de"],
+            ],
+            cmin=-90.0,
+            cmax=90.0,
+            showscale=False,
+            name="Earth",
+            hoverinfo="skip",
+            lighting=dict(ambient=0.65, diffuse=0.85, roughness=0.9, specular=0.15),
+            lightposition=dict(x=80_000.0, y=60_000.0, z=95_000.0),
+            opacity=0.95,
+        )
+    )
+
+    if flight_lats:
+        flight_lat_arr = np.asarray(flight_lats, dtype=float)
+        flight_lon_arr = np.asarray(flight_lons, dtype=float)
+        flight_alt_arr = np.asarray(flight_alt, dtype=float)
+        flight_xyz = geodetic_to_ecef(flight_lat_arr, flight_lon_arr, flight_alt_arr)
+        globe_fig.add_trace(
+            go.Scatter3d(
+                x=flight_xyz[:, 0],
+                y=flight_xyz[:, 1],
+                z=flight_xyz[:, 2],
+                mode="lines",
+                line=dict(color="black", width=6),
+                name="Flight",
+                customdata=np.column_stack([flight_lat_arr, flight_lon_arr, flight_alt_arr]),
+                hovertemplate="Lat: %{customdata[0]:.3f}<br>Lon: %{customdata[1]:.3f}<br>Alt: %{customdata[2]:.0f} m<extra>Flight</extra>",
+            )
+        )
+
+    max_altitude_candidates = [0.0, *flight_alt]
+    for emission in result.emissions:
+        for ray in emission.rays[:max_rays_per_emission]:
+            g = ray.trajectory_geodetic
+            ray_xyz = geodetic_to_ecef(g[:, 0], g[:, 1], g[:, 2])
+            if g.size:
+                max_altitude_candidates.append(float(np.nanmax(g[:, 2])))
+            globe_fig.add_trace(
+                go.Scatter3d(
+                    x=ray_xyz[:, 0],
+                    y=ray_xyz[:, 1],
+                    z=ray_xyz[:, 2],
+                    mode="lines",
+                    line=dict(color="royalblue", width=2),
+                    opacity=0.2,
+                    showlegend=False,
+                    customdata=g,
+                    hovertemplate="Lat: %{customdata[0]:.3f}<br>Lon: %{customdata[1]:.3f}<br>Alt: %{customdata[2]:.0f} m<extra>Ray</extra>",
+                )
+            )
+
     lat_hits, lon_hits, _ = result.all_ground_hits()
+    if lat_hits.size:
+        hit_xyz = geodetic_to_ecef(lat_hits, lon_hits, np.zeros_like(lat_hits))
+        globe_fig.add_trace(
+            go.Scatter3d(
+                x=hit_xyz[:, 0],
+                y=hit_xyz[:, 1],
+                z=hit_xyz[:, 2],
+                mode="markers",
+                marker=dict(color="crimson", size=3, opacity=0.75),
+                name="Ground hits",
+                customdata=np.column_stack([lat_hits, lon_hits]),
+                hovertemplate="Lat: %{customdata[0]:.3f}<br>Lon: %{customdata[1]:.3f}<extra>Ground hit</extra>",
+            )
+        )
+
+    max_altitude_m = float(np.nanmax(np.asarray(max_altitude_candidates, dtype=float)))
+    if not np.isfinite(max_altitude_m):
+        max_altitude_m = 0.0
+    earth_extent = float(np.max(np.abs(globe_xyz)))
+    axis_limit = earth_extent + max(10_000.0, 1.1 * max_altitude_m)
+    globe_fig.update_layout(
+        title="Mach Cutoff Interactive Globe",
+        scene=dict(
+            xaxis=dict(visible=False, showgrid=False, zeroline=False, range=[-axis_limit, axis_limit]),
+            yaxis=dict(visible=False, showgrid=False, zeroline=False, range=[-axis_limit, axis_limit]),
+            zaxis=dict(visible=False, showgrid=False, zeroline=False, range=[-axis_limit, axis_limit]),
+            aspectmode="data",
+        ),
+        legend=dict(y=0.96, x=0.01),
+        margin=dict(l=0, r=0, t=60, b=0),
+    )
+
+    if write_html:
+        pglobe = out_dir / "plotly_globe.html"
+        globe_fig.write_html(pglobe, include_plotlyjs="cdn")
+        generated["globe_html"] = str(pglobe)
+
+    # Ground hits
     fig2d = go.Figure()
+    lon_candidates = list(flight_lons)
+    lat_candidates = list(flight_lats)
+    if lon_hits.size:
+        lon_candidates.extend(lon_hits.tolist())
+    if lat_hits.size:
+        lat_candidates.extend(lat_hits.tolist())
     if terrain_2d is not None:
         t_lat2, t_lon2, t_elev2 = terrain_2d
+        lon_candidates.extend([float(np.min(t_lon2)), float(np.max(t_lon2))])
+        lat_candidates.extend([float(np.min(t_lat2)), float(np.max(t_lat2))])
+
+    drew_remote_basemap = False
+    if map_style != MAP_STYLE_TOPOGRAPHIC and lon_candidates and lat_candidates:
+        basemap = fetch_basemap_tile(
+            lon_min=min(lon_candidates),
+            lon_max=max(lon_candidates),
+            lat_min=min(lat_candidates),
+            lat_max=max(lat_candidates),
+            map_style=map_style,
+        )
+        if basemap is not None:
+            source = rgba_to_png_data_uri(basemap.image_rgba)
+            if source is not None:
+                lon_left, lon_right, lat_bottom, lat_top = basemap.extent_lon_lat
+                fig2d.add_layout_image(
+                    dict(
+                        source=source,
+                        xref="x",
+                        yref="y",
+                        x=lon_left,
+                        y=lat_top,
+                        sizex=lon_right - lon_left,
+                        sizey=lat_top - lat_bottom,
+                        sizing="stretch",
+                        opacity=1.0,
+                        layer="below",
+                    )
+                )
+                fig2d.add_annotation(
+                    xref="paper",
+                    yref="paper",
+                    x=0.01,
+                    y=0.01,
+                    text=basemap.attribution,
+                    showarrow=False,
+                    font=dict(size=9, color="#222"),
+                    bgcolor="rgba(255,255,255,0.7)",
+                )
+                drew_remote_basemap = True
+
+    if terrain_2d is not None and not drew_remote_basemap:
         fig2d.add_trace(
             go.Scattergl(
                 x=t_lon2.ravel(),
@@ -145,7 +312,7 @@ def render_plotly_bundle(
                     size=3,
                     opacity=0.45,
                     color=t_elev2.ravel(),
-                    colorscale="Earth",
+                    colorscale=terrain_colorscale,
                     showscale=True,
                     colorbar=dict(title="Terrain (m MSL)"),
                 ),
@@ -176,6 +343,7 @@ def render_plotly_bundle(
         title="Ground Intersection Footprint",
         xaxis_title="Longitude (deg)",
         yaxis_title="Latitude (deg)",
+        xaxis=dict(scaleanchor="y", scaleratio=1),
     )
 
     if write_html:
@@ -490,7 +658,7 @@ def render_plotly_bundle(
                     x=t_lon,
                     y=t_lat,
                     z=t_elev,
-                    colorscale="Earth",
+                    colorscale=terrain_colorscale,
                     opacity=0.45,
                     name="Terrain",
                     showscale=False,

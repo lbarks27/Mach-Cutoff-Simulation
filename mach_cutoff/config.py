@@ -46,7 +46,7 @@ class ShockConfig:
     rays_per_emission: int = 40
     downward_only: bool = True
     azimuth_offset_deg: float = 0.0
-    direction_reference: str = "earth_down"
+    direction_reference: str = "aircraft_forward"
 
 
 @dataclass(slots=True)
@@ -77,6 +77,7 @@ class VisualizationConfig:
     make_animation: bool = True
     write_html: bool = True
     include_atmosphere: bool = True
+    map_style: str = "topographic"
 
 
 @dataclass(slots=True)

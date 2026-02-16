@@ -103,6 +103,10 @@ class FlightPath:
     def total_length_m(self) -> float:
         return float(self._cum_length_m[-1])
 
+    @property
+    def segment_count(self) -> int:
+        return int(len(self._segment_vectors))
+
     def _segment_index(self, t_epoch: float) -> int:
         if t_epoch <= self._times[0]:
             return 0
@@ -172,6 +176,49 @@ class FlightPath:
             "segment_index": i,
             "segment_fraction": float(f),
             "distance_m": s,
+        }
+
+    def project_ecef(self, ecef_m: np.ndarray):
+        """Project an ECEF point onto the piecewise-linear route."""
+        p = np.asarray(ecef_m, dtype=float).reshape(3)
+        best_i = 0
+        best_f = 0.0
+        best_point = self._ecef[0]
+        best_dist2 = np.inf
+
+        for i, seg in enumerate(self._segment_vectors):
+            p0 = self._ecef[i]
+            seg_len2 = float(np.dot(seg, seg))
+            if seg_len2 <= 1e-12:
+                f = 0.0
+                candidate = p0
+            else:
+                f = float(np.clip(np.dot(p - p0, seg) / seg_len2, 0.0, 1.0))
+                candidate = p0 + f * seg
+            dist2 = float(np.dot(p - candidate, p - candidate))
+            if dist2 < best_dist2:
+                best_dist2 = dist2
+                best_i = i
+                best_f = f
+                best_point = candidate
+
+        seg_vec = self._segment_vectors[best_i]
+        seg_norm = float(np.linalg.norm(seg_vec))
+        tangent = seg_vec / seg_norm if seg_norm > 0.0 else np.array([1.0, 0.0, 0.0], dtype=float)
+        along_distance_m = float(self._cum_length_m[best_i] + best_f * self._segment_lengths_m[best_i])
+        cross_track_m = float(np.sqrt(max(best_dist2, 0.0)))
+
+        lat, lon, alt = ecef_to_geodetic(best_point[0], best_point[1], best_point[2])
+        return {
+            "distance_m": along_distance_m,
+            "cross_track_m": cross_track_m,
+            "segment_index": best_i,
+            "segment_fraction": float(best_f),
+            "nearest_ecef_m": np.asarray(best_point, dtype=float),
+            "nearest_lat_deg": float(lat),
+            "nearest_lon_deg": float(lon),
+            "nearest_alt_m": float(alt),
+            "tangent_ecef": tangent,
         }
 
     def sample_times(

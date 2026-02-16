@@ -7,6 +7,12 @@ from pathlib import Path
 import numpy as np
 
 from ...simulation.outputs import SimulationResult
+from ..basemap import (
+    MAP_STYLE_TOPOGRAPHIC,
+    fetch_basemap_tile,
+    normalize_map_style,
+    terrain_pyvista_cmap,
+)
 from ..terrain import downsample_terrain_grid, terrain_grid_from_result
 
 
@@ -28,6 +34,16 @@ def _terrain_mesh(lat_deg: np.ndarray, lon_deg: np.ndarray, elevation_km: np.nda
     return mesh
 
 
+def _basemap_plane(extent_lon_lat: tuple[float, float, float, float], z: float):
+    import pyvista as pv
+
+    lon_left, lon_right, lat_bottom, lat_top = extent_lon_lat
+    center = ((lon_left + lon_right) * 0.5, (lat_bottom + lat_top) * 0.5, z)
+    i_size = max(1e-6, lon_right - lon_left)
+    j_size = max(1e-6, lat_top - lat_bottom)
+    return pv.Plane(center=center, direction=(0.0, 0.0, 1.0), i_size=i_size, j_size=j_size, i_resolution=1, j_resolution=1)
+
+
 def render_pyvista_bundle(
     result: SimulationResult,
     output_dir: str | Path,
@@ -35,6 +51,7 @@ def render_pyvista_bundle(
     make_animation: bool = True,
     max_rays_per_emission: int = 20,
     show_window: bool = False,
+    map_style: str = MAP_STYLE_TOPOGRAPHIC,
 ):
     try:
         import pyvista as pv
@@ -44,6 +61,8 @@ def render_pyvista_bundle(
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     generated = {}
+    map_style = normalize_map_style(map_style)
+    terrain_cmap = terrain_pyvista_cmap(map_style)
 
     # Static 3D screenshot
     plotter = pv.Plotter(off_screen=not show_window, window_size=(1400, 900))
@@ -66,7 +85,7 @@ def render_pyvista_bundle(
         plotter.add_mesh(
             terrain_mesh,
             scalars="terrain_km",
-            cmap="terrain",
+            cmap=terrain_cmap,
             opacity=0.65,
             show_scalar_bar=False,
             smooth_shading=True,
@@ -94,18 +113,45 @@ def render_pyvista_bundle(
     if lat_hits.size:
         p2 = pv.Plotter(off_screen=not show_window, window_size=(1200, 800))
         overlay_z = 0.0
+        lon_candidates = list(flight_xyz[:, 0]) if flight_xyz.size else []
+        lat_candidates = list(flight_xyz[:, 1]) if flight_xyz.size else []
+        lon_candidates.extend(lon_hits.tolist())
+        lat_candidates.extend(lat_hits.tolist())
+
+        drew_remote_basemap = False
+        if terrain_data is not None:
+            t_lat, t_lon, _ = terrain_data
+            lon_candidates.extend([float(np.min(t_lon)), float(np.max(t_lon))])
+            lat_candidates.extend([float(np.min(t_lat)), float(np.max(t_lat))])
+
+        if map_style != MAP_STYLE_TOPOGRAPHIC and lon_candidates and lat_candidates:
+            basemap = fetch_basemap_tile(
+                lon_min=min(lon_candidates),
+                lon_max=max(lon_candidates),
+                lat_min=min(lat_candidates),
+                lat_max=max(lat_candidates),
+                map_style=map_style,
+            )
+            if basemap is not None:
+                overlay_z = 0.05
+                plane = _basemap_plane(basemap.extent_lon_lat, z=overlay_z)
+                texture = pv.Texture(np.flipud(basemap.image_rgba))
+                p2.add_mesh(plane, texture=texture)
+                drew_remote_basemap = True
+
         if terrain_data is not None:
             t_lat, t_lon, t_elev = terrain_data
             t_km = t_elev / 1000.0
-            overlay_z = float(np.max(t_km)) + 0.05
-            p2.add_mesh(
-                _terrain_mesh(t_lat, t_lon, t_km),
-                scalars="terrain_km",
-                cmap="terrain",
-                opacity=0.85,
-                show_scalar_bar=False,
-                smooth_shading=True,
-            )
+            if not drew_remote_basemap:
+                overlay_z = float(np.max(t_km)) + 0.05
+                p2.add_mesh(
+                    _terrain_mesh(t_lat, t_lon, t_km),
+                    scalars="terrain_km",
+                    cmap=terrain_cmap,
+                    opacity=0.85,
+                    show_scalar_bar=False,
+                    smooth_shading=True,
+                )
 
         ground_pts = np.column_stack([lon_hits, lat_hits, np.full_like(lat_hits, overlay_z)])
         p2.add_points(ground_pts, color="crimson", point_size=6.0, render_points_as_spheres=True)
@@ -134,7 +180,7 @@ def render_pyvista_bundle(
                     p3.add_mesh(
                         _terrain_mesh(t_lat, t_lon, t_elev / 1000.0),
                         scalars="terrain_km",
-                        cmap="terrain",
+                        cmap=terrain_cmap,
                         opacity=0.65,
                         show_scalar_bar=False,
                         smooth_shading=True,
@@ -164,7 +210,7 @@ def render_pyvista_bundle(
                     p3.add_mesh(
                         _terrain_mesh(t_lat, t_lon, t_elev / 1000.0),
                         scalars="terrain_km",
-                        cmap="terrain",
+                        cmap=terrain_cmap,
                         opacity=0.65,
                         show_scalar_bar=False,
                         smooth_shading=True,
