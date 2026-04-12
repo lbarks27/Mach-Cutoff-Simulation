@@ -1,0 +1,58 @@
+{
+  "anchor_scenarios": [
+    "s1"
+  ],
+  "sign_consistency": {
+    "population_avoidant_vs_fastest": {
+      "elapsed_time_s": 0.0,
+      "time_proxy_s": 0.0,
+      "route_distance_km": 0.0,
+      "fuel_proxy": 0.0,
+      "ground_hit_count": 0.0,
+      "populated_ground_hit_count": 0.0,
+      "boom_exposed_population": 0.0,
+      "boom_exposed_area_km2": 0.0,
+      "overflight_population": 0.0,
+      "overflight_area_km2": 0.0,
+      "cutoff_emission_fraction": 0.0,
+      "distance_to_destination_m": 0.0,
+      "abort_samples": 0.0
+    },
+    "cutoff_optimized_vs_fastest": {
+      "elapsed_time_s": 0.0,
+      "time_proxy_s": 0.0,
+      "route_distance_km": 0.0,
+      "fuel_proxy": 0.0,
+      "ground_hit_count": 0.0,
+      "populated_ground_hit_count": 0.0,
+      "boom_exposed_population": 0.0,
+      "boom_exposed_area_km2": 0.0,
+      "overflight_population": 0.0,
+      "overflight_area_km2": 0.0,
+      "cutoff_emission_fraction": 0.0,
+      "distance_to_destination_m": 0.0,
+      "abort_samples": 0.0
+    },
+    "cutoff_optimized_vs_population_avoidant": {
+      "elapsed_time_s": 0.0,
+      "time_proxy_s": 0.0,
+      "route_distance_km": 0.0,
+      "fuel_proxy": 0.0,
+      "ground_hit_count": 0.0,
+      "populated_ground_hit_count": 0.0,
+      "boom_exposed_population": 0.0,
+      "boom_exposed_area_km2": 0.0,
+      "overflight_population": 0.0,
+      "overflight_area_km2": 0.0,
+      "cutoff_emission_fraction": 0.0,
+      "distance_to_destination_m": 0.0,
+      "abort_samples": 0.0
+    }
+  },
+  "dominance_retention_rate": 0.0,
+  "primary_metric_best_rate": {
+    "fastest": 0.0,
+    "population_avoidant": 0.0,
+    "cutoff_optimized": 0.0
+  }
+}

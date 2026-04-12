@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from contextlib import nullcontext
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import numpy as np
@@ -28,6 +28,7 @@ from .outputs import (
     RayResult,
     SimulationResult,
 )
+from .population import analyze_population_impact
 
 
 def _parse_time_iso(value: str | None) -> datetime | None:
@@ -97,32 +98,26 @@ class MachCutoffSimulator:
             wind_for_propagation_enu = None
 
         start_time = _parse_time_iso(self.config.runtime.start_time_iso) or aircraft.start_time
-        end_time = _parse_time_iso(self.config.runtime.end_time_iso) or aircraft.end_time
+        emission_interval_s = float(self.config.shock.emission_interval_s)
+        if emission_interval_s <= 0.0:
+            raise ValueError("shock.emission_interval_s must be positive")
 
-        emission_times = path.sample_times(
-            self.config.shock.emission_interval_s,
-            start=start_time,
-            end=end_time,
-            clamp_to_path_bounds=False,
-        )
+        max_emissions: int | None = None
         if self.config.runtime.max_emissions is not None:
-            emission_times = emission_times[: self.config.runtime.max_emissions]
-        if not emission_times:
-            return SimulationResult(emissions=[], config_dict=self.config.to_dict())
+            max_emissions = int(self.config.runtime.max_emissions)
+            if max_emissions <= 0:
+                return SimulationResult(emissions=[], config_dict=self.config.to_dict())
 
-        total_emissions = len(emission_times)
-        first_emit_epoch = emission_times[0].timestamp()
-        last_emit_epoch = emission_times[-1].timestamp()
-        emission_window_duration_s = max(0.0, last_emit_epoch - first_emit_epoch)
-        flight_start_epoch = aircraft.start_time.timestamp()
-        flight_duration_s = max(0.0, aircraft.duration_s)
+        first_emit_epoch = start_time.timestamp()
+        if not np.isfinite(first_emit_epoch):
+            return SimulationResult(emissions=[], config_dict=self.config.to_dict())
 
         bbox = _waypoint_bbox(path)
         hrrr_manager = HRRRDatasetManager(self.config.hrrr, bbox=bbox)
-        snapshots_by_time = hrrr_manager.snapshots_for_times(emission_times)
+        snapshots_by_time = hrrr_manager.snapshots_for_times([start_time])
         if not snapshots_by_time:
             raise RuntimeError("No HRRR snapshots were loaded for the requested emission times")
-        snapshot_times = list(snapshots_by_time.keys())
+        snapshot_times = sorted(snapshots_by_time.keys())
 
         terrain_lat = None
         terrain_lon = None
@@ -152,28 +147,53 @@ class MachCutoffSimulator:
         ray_pool_context = (
             ThreadPoolExecutor(max_workers=ray_workers) if ray_workers > 1 else nullcontext()
         )
+
+        emit_idx = 0
+        emit_time = start_time
+        route_length_m = max(float(path.total_length_m), 1e-6)
+        best_remaining_m = float(path.total_length_m)
+        last_distance_to_destination_m = best_remaining_m
+        stalled_emissions = 0
+        stall_limit_emissions = 2_400  # Prevent unbounded loops if guidance never converges.
+        termination_reason = "destination_reached"
+
         with ray_pool_context as ray_pool:
-            for emit_idx, emit_time in enumerate(emission_times):
+            while True:
+                if max_emissions is not None and emit_idx >= max_emissions:
+                    termination_reason = "max_emissions_reached"
+                    break
+                emit_idx += 1
+
                 if self.guidance_config.enabled:
                     aircraft.ingest_feedback(guidance_feedback or GuidanceFeedback())
                     state, guidance_command = aircraft.state_at(emit_time, wind_enu_mps=wind_for_propagation_enu)
                 else:
                     state = aircraft.state_at(emit_time)
                     guidance_command = None
+
+                projected = path.project_ecef(np.asarray(state.position_ecef_m, dtype=float))
+                projected_remaining_m = max(0.0, float(path.total_length_m) - float(projected["distance_m"]))
+                if guidance_command is not None:
+                    distance_to_destination_m = max(0.0, float(guidance_command.distance_to_destination_m))
+                else:
+                    distance_to_destination_m = projected_remaining_m
+                last_distance_to_destination_m = float(distance_to_destination_m)
+                route_progress_pct = 100.0 * np.clip(1.0 - projected_remaining_m / route_length_m, 0.0, 1.0)
+
                 dirs_ecef = generate_shock_directions(state, self.config.shock)
                 emit_epoch = emit_time.timestamp()
                 elapsed_window_s = max(0.0, emit_epoch - first_emit_epoch)
-                remaining_window_s = max(0.0, last_emit_epoch - emit_epoch)
-                if emission_window_duration_s > 0.0:
-                    window_progress_pct = 100.0 * elapsed_window_s / emission_window_duration_s
+                if max_emissions is not None and max_emissions > 0:
+                    count_progress_pct = 100.0 * float(emit_idx) / float(max_emissions)
+                    remaining_window_s = max(0.0, float(max_emissions - emit_idx) * emission_interval_s)
                 else:
-                    window_progress_pct = 100.0
-                if flight_duration_s > 0.0:
-                    flight_progress_pct = 100.0 * np.clip((emit_epoch - flight_start_epoch) / flight_duration_s, 0.0, 1.0)
-                else:
-                    flight_progress_pct = 100.0
-                count_progress_pct = 100.0 * (emit_idx + 1) / total_emissions
+                    count_progress_pct = 100.0
+                    remaining_window_s = distance_to_destination_m / max(float(state.speed_mps), 1.0)
 
+                new_snapshots = hrrr_manager.snapshots_for_times([emit_time])
+                for snap_t, snap in new_snapshots.items():
+                    snapshots_by_time[snap_t] = snap
+                snapshot_times = sorted(snapshots_by_time.keys())
                 snap_time = _nearest_snapshot_time(snapshot_times, emit_time)
                 if snap_time not in interp_cache:
                     interp_cache[snap_time] = HRRRInterpolator(snapshots_by_time[snap_time])
@@ -222,7 +242,7 @@ class MachCutoffSimulator:
                 sample_c_eff.append(float(ce0[0]))
                 ce0_scalar = float(ce0[0])
                 effective_mach = float(state.speed_mps / max(ce0_scalar, 1e-6))
-                source_mach_cutoff = bool(effective_mach <= 1.0)
+                source_mach_cutoff = bool(effective_mach <= 1.0 or float(state.mach) <= 1.0)
 
                 if vertical_profile is None:
                     alt_profile = np.linspace(
@@ -344,10 +364,10 @@ class MachCutoffSimulator:
                         wind_for_propagation_enu = np.array([float(u0[0]), float(v0[0]), 0.0], dtype=float)
                     print(
                         "[sim] emission "
-                        f"{emit_idx + 1}/{total_emissions} "
-                        f"(count={count_progress_pct:5.1f}%, window={window_progress_pct:5.1f}%, route={flight_progress_pct:5.1f}%) "
+                        f"{emit_idx}" + (f"/{max_emissions}" if max_emissions is not None else "") + " "
+                        f"(count={count_progress_pct:5.1f}%, route={route_progress_pct:5.1f}%) "
                         f"time={emit_time.isoformat()} "
-                        f"elapsed={elapsed_window_s / 60.0:7.2f}m remaining={remaining_window_s / 60.0:7.2f}m | "
+                        f"elapsed={elapsed_window_s / 60.0:7.2f}m eta={remaining_window_s / 60.0:7.2f}m | "
                         f"aircraft lat={state.lat_deg:+8.4f} lon={state.lon_deg:+9.4f} alt={state.alt_m:7.1f}m "
                         f"({state.alt_m * 3.28084:8.1f}ft) speed={state.speed_mps:6.1f}m/s "
                         f"({state.speed_mps * 1.943844:6.1f}kt) mach={state.mach:.2f} "
@@ -356,8 +376,21 @@ class MachCutoffSimulator:
                         f"atmo T={float(t0[0]):6.2f}K RH={float(rh0[0]):5.1f}% p={float(p0[0]):7.2f}hPa "
                         f"c={float(c0[0]):6.2f}m/s w_proj={float(w0[0]):+6.2f}m/s c_eff={ce0_scalar:6.2f}m/s | "
                         f"hrrr={snap_time.isoformat()} dt={snapshot_offset_min:+6.2f}m | "
-                        "SOURCE CUT OFF (effective mach <= 1.0), rays=0"
+                        "SOURCE CUT OFF (effective mach <= 1.0 or aircraft mach <= 1.0), rays=0"
                     )
+                    if distance_to_destination_m + 1.0 < best_remaining_m:
+                        best_remaining_m = distance_to_destination_m
+                        stalled_emissions = 0
+                    else:
+                        stalled_emissions += 1
+                    arrival_tolerance_m = max(250.0, float(state.speed_mps) * emission_interval_s)
+                    if distance_to_destination_m <= arrival_tolerance_m:
+                        termination_reason = "destination_reached"
+                        break
+                    if max_emissions is None and stalled_emissions >= stall_limit_emissions:
+                        termination_reason = "destination_not_converging"
+                        break
+                    emit_time = emit_time + timedelta(seconds=emission_interval_s)
                     continue
 
                 ground_hit_count = 0
@@ -453,10 +486,10 @@ class MachCutoffSimulator:
                     wind_for_propagation_enu = np.array([float(u0[0]), float(v0[0]), 0.0], dtype=float)
                 print(
                     "[sim] emission "
-                    f"{emit_idx + 1}/{total_emissions} "
-                    f"(count={count_progress_pct:5.1f}%, window={window_progress_pct:5.1f}%, route={flight_progress_pct:5.1f}%) "
+                    f"{emit_idx}" + (f"/{max_emissions}" if max_emissions is not None else "") + " "
+                    f"(count={count_progress_pct:5.1f}%, route={route_progress_pct:5.1f}%) "
                     f"time={emit_time.isoformat()} "
-                    f"elapsed={elapsed_window_s / 60.0:7.2f}m remaining={remaining_window_s / 60.0:7.2f}m | "
+                    f"elapsed={elapsed_window_s / 60.0:7.2f}m eta={remaining_window_s / 60.0:7.2f}m | "
                     f"aircraft lat={state.lat_deg:+8.4f} lon={state.lon_deg:+9.4f} alt={state.alt_m:7.1f}m "
                     f"({state.alt_m * 3.28084:8.1f}ft) speed={state.speed_mps:6.1f}m/s "
                     f"({state.speed_mps * 1.943844:6.1f}kt) mach={state.mach:.2f} eff_mach={effective_mach:.3f} | "
@@ -468,6 +501,26 @@ class MachCutoffSimulator:
                     f"avg_pts={avg_ray_points:6.1f} cutoff={'yes' if emission_result.mach_cutoff else 'no'} "
                     f"terminal_alt=[{terminal_alt_min_m:7.1f},{terminal_alt_max_m:7.1f}]m"
                 )
+                if distance_to_destination_m + 1.0 < best_remaining_m:
+                    best_remaining_m = distance_to_destination_m
+                    stalled_emissions = 0
+                else:
+                    stalled_emissions += 1
+                arrival_tolerance_m = max(250.0, float(state.speed_mps) * emission_interval_s)
+                if distance_to_destination_m <= arrival_tolerance_m:
+                    termination_reason = "destination_reached"
+                    break
+                if max_emissions is None and stalled_emissions >= stall_limit_emissions:
+                    termination_reason = "destination_not_converging"
+                    break
+                emit_time = emit_time + timedelta(seconds=emission_interval_s)
+
+        print(
+            "[sim] stop "
+            f"reason={termination_reason} "
+            f"emissions={len(emissions)} "
+            f"distance_to_destination={last_distance_to_destination_m:,.1f} m"
+        )
 
         atmospheric_time_series = None
         if sample_times:
@@ -486,6 +539,24 @@ class MachCutoffSimulator:
                 effective_sound_speed_mps=np.asarray(sample_c_eff, dtype=np.float32),
             )
 
+        population_impact = None
+        if self.config.population.enabled:
+            try:
+                population_impact = analyze_population_impact(emissions, self.config.population)
+                if population_impact is None:
+                    print("[warn] population analysis enabled, but no usable population data was found")
+                else:
+                    print(
+                        "[sim] population "
+                        f"dataset={population_impact.dataset_name!r} "
+                        f"total={population_impact.total_population_in_heatmap:,.0f} "
+                        f"exposed={population_impact.total_exposed_population:,.0f} "
+                        f"area={population_impact.total_exposed_area_km2:,.1f} km^2 "
+                        f"overflight={population_impact.total_overflight_population:,.0f}"
+                    )
+            except Exception as exc:
+                print(f"[warn] population analysis failed: {exc}")
+
         return SimulationResult(
             emissions=emissions,
             config_dict=self.config.to_dict(),
@@ -495,4 +566,5 @@ class MachCutoffSimulator:
             atmospheric_time_series=atmospheric_time_series,
             atmospheric_vertical_profile=vertical_profile,
             atmospheric_grid_3d=atmospheric_grid_3d,
+            population_impact=population_impact,
         )

@@ -1,0 +1,7 @@
+scenario_id,sensitivity_profile,class_a,class_b,dominates
+s1,core,fastest,population_avoidant,False
+s1,core,fastest,cutoff_optimized,False
+s1,core,population_avoidant,fastest,False
+s1,core,population_avoidant,cutoff_optimized,False
+s1,core,cutoff_optimized,fastest,False
+s1,core,cutoff_optimized,population_avoidant,False

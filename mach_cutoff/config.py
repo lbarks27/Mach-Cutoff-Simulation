@@ -69,6 +69,19 @@ class RuntimeConfig:
 
 
 @dataclass(slots=True)
+class PopulationConfig:
+    enabled: bool = False
+    dataset_path: str | None = None
+    heatmap_cell_deg: float = 0.12
+    hit_radius_km: float = 25.0
+    trace_half_width_km: float = 12.0
+    overflight_half_width_km: float = 20.0
+    max_segment_length_km: float = 220.0
+    domain_pad_deg: float = 0.8
+    max_grid_cells: int = 600_000
+
+
+@dataclass(slots=True)
 class VisualizationConfig:
     enable_matplotlib: bool = True
     enable_plotly: bool = True
@@ -81,6 +94,44 @@ class VisualizationConfig:
 
 
 @dataclass(slots=True)
+class RouteOptimizationConfig:
+    enabled: bool = False
+    max_wall_time_s: float = 300.0
+    reserve_time_for_full_fidelity_s: float = 120.0
+    seed: int = 17
+    batch_size: int = 4
+    finalists: int = 3
+    elite_pool_size: int = 6
+    max_duplicate_attempts: int = 10
+    min_control_waypoints: int = 9
+    enable_fuel_objective: bool = True
+    weight_population: float = 1.0
+    weight_speed: float = 0.35
+    weight_fuel: float = 0.20
+    weight_populated_ground_hits: float = 8.0
+    weight_total_ground_hits: float = 0.35
+    weight_overflight_population: float = 0.0
+    weight_overflight_area: float = 0.0
+    boom_exposure_limit_people: float | None = None
+    weight_boom_exposure_limit: float = 0.0
+    min_cutoff_emission_fraction: float | None = None
+    weight_cutoff_shortfall: float = 0.0
+    unpopulated_speed_weight_bonus: float = 0.8
+    min_fuel_weight_scale: float = 0.10
+    artifact_mode: str = "full"
+    populated_hit_people_threshold: float = 1.0
+    populated_cell_people_threshold: float = 1.0
+    population_guard_hit_radius_km: float = 60.0
+    abort_sample_penalty_s: float = 90.0
+    low_fidelity_emission_interval_scale: float = 2.0
+    low_fidelity_rays_scale: float = 0.35
+    low_fidelity_grid_scale: float = 0.55
+    low_fidelity_step_scale: float = 1.8
+    low_fidelity_max_steps_scale: float = 0.45
+    low_fidelity_max_emissions: int = 96
+
+
+@dataclass(slots=True)
 class ExperimentConfig:
     hrrr: HRRRConfig = field(default_factory=HRRRConfig)
     grid: GridConfig = field(default_factory=GridConfig)
@@ -88,7 +139,9 @@ class ExperimentConfig:
     shock: ShockConfig = field(default_factory=ShockConfig)
     raytrace: RaytraceConfig = field(default_factory=RaytraceConfig)
     runtime: RuntimeConfig = field(default_factory=RuntimeConfig)
+    population: PopulationConfig = field(default_factory=PopulationConfig)
     visualization: VisualizationConfig = field(default_factory=VisualizationConfig)
+    route_optimization: RouteOptimizationConfig = field(default_factory=RouteOptimizationConfig)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ExperimentConfig":
@@ -99,7 +152,9 @@ class ExperimentConfig:
             shock=ShockConfig(**data.get("shock", {})),
             raytrace=RaytraceConfig(**data.get("raytrace", {})),
             runtime=RuntimeConfig(**data.get("runtime", {})),
+            population=PopulationConfig(**data.get("population", {})),
             visualization=VisualizationConfig(**data.get("visualization", {})),
+            route_optimization=RouteOptimizationConfig(**data.get("route_optimization", {})),
         )
 
     def to_dict(self) -> dict[str, Any]:

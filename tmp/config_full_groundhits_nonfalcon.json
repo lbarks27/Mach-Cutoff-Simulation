@@ -5,7 +5,7 @@
     "product": "wrfprsf",
     "use_s3fs": true,
     "http_fallback": true,
-    "download_workers": 8,
+    "download_workers": 6,
     "local_grib_dir": null,
     "keep_downloaded_files": true
   },
@@ -26,11 +26,11 @@
     "reference_sound_speed_mps": 340.29
   },
   "shock": {
-    "emission_interval_s": 5.0,
-    "rays_per_emission": 9,
-    "downward_only": false,
+    "emission_interval_s": 60.0,
+    "rays_per_emission": 48,
+    "downward_only": true,
     "azimuth_offset_deg": 0.0,
-    "direction_reference": "aircraft_forward"
+    "direction_reference": "aircraft_aft"
   },
   "raytrace": {
     "ds_m": 200.0,
@@ -45,41 +45,24 @@
     "start_time_iso": null,
     "end_time_iso": null,
     "max_emissions": null,
-    "ray_batch_size": 10
+    "ray_batch_size": 0
   },
   "population": {
     "enabled": true,
     "dataset_path": null,
-    "heatmap_cell_deg": 0.1,
-    "hit_radius_km": 80.0,
-    "trace_half_width_km": 14.0
-  },
-  "route_optimization": {
-    "enabled": true,
-    "max_wall_time_s": 360.0,
-    "reserve_time_for_full_fidelity_s": 100.0,
-    "seed": 17,
-    "batch_size": 6,
-    "finalists": 4,
-    "min_control_waypoints": 11,
-    "enable_fuel_objective": true,
-    "weight_population": 3.5,
-    "weight_speed": 1.8,
-    "weight_fuel": 0.015,
-    "weight_populated_ground_hits": 24.0,
-    "weight_total_ground_hits": 0.08,
-    "unpopulated_speed_weight_bonus": 3.2,
-    "min_fuel_weight_scale": 0.0,
-    "populated_hit_people_threshold": 1.0,
-    "populated_cell_people_threshold": 1.0,
-    "population_guard_hit_radius_km": 90.0
+    "heatmap_cell_deg": 0.12,
+    "hit_radius_km": 25.0,
+    "trace_half_width_km": 12.0,
+    "max_segment_length_km": 220.0,
+    "domain_pad_deg": 0.8,
+    "max_grid_cells": 600000
   },
   "visualization": {
     "enable_matplotlib": true,
     "enable_plotly": true,
-    "enable_pyvista": true,
-    "output_dir": "outputs_full_routeopt",
-    "make_animation": true,
+    "enable_pyvista": false,
+    "output_dir": "tmp/outputs_full_groundhits_nonfalcon",
+    "make_animation": false,
     "write_html": true,
     "include_atmosphere": true,
     "map_style": "topographic"

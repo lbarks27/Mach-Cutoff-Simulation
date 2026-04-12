@@ -1,0 +1,255 @@
+{
+  "name": "us_archetypes_jan22",
+  "output_root": "../benchmarks/us_archetypes_jan22",
+  "base_config_path": "config_benchmark_base.json",
+  "base_guidance_config_path": "guidance_benchmark_base.json",
+  "population_cache_dir": "../.cache/population",
+  "gpw": {
+    "product": "gpwv4_popcount_r11",
+    "year": 2020,
+    "auto_download": true,
+    "raw_cache_dir": "../.cache/population/raw",
+    "prepared_cache_dir": "../.cache/population/prepared",
+    "prepared_cell_deg": 0.05,
+    "conus_bounds": [-125.0, 24.0, -66.0, 50.0]
+  },
+  "research_objectives": {
+    "baseline_route_class_id": "fastest",
+    "boom_exposure_limit_people": 100000.0,
+    "max_time_penalty_pct": 20.0,
+    "min_cutoff_emission_fraction": 0.75,
+    "max_abort_samples": 0,
+    "max_distance_to_destination_m": 5000.0
+  },
+  "route_classes": {
+    "fastest": {
+      "notes": "Time-optimized supersonic route",
+      "config_overrides": {
+        "route_optimization": {
+          "weight_population": 0.0,
+          "weight_populated_ground_hits": 0.0,
+          "weight_total_ground_hits": 0.0,
+          "weight_overflight_population": 0.0,
+          "weight_overflight_area": 0.0,
+          "weight_boom_exposure_limit": 0.0,
+          "weight_cutoff_shortfall": 0.0,
+          "weight_speed": 4.0,
+          "weight_fuel": 0.35,
+          "unpopulated_speed_weight_bonus": 0.0
+        }
+      },
+      "guidance_overrides": {
+        "boom_avoidance": {
+          "enable_ground_hit_feedback": false,
+          "optimizer": {
+            "enabled": false
+          }
+        }
+      }
+    },
+    "population_avoidant": {
+      "notes": "Overflight-first hybrid objective",
+      "config_overrides": {
+        "route_optimization": {
+          "weight_population": 1.2,
+          "weight_populated_ground_hits": 0.8,
+          "weight_total_ground_hits": 0.1,
+          "weight_overflight_population": 4.0,
+          "weight_overflight_area": 1.5,
+          "boom_exposure_limit_people": 100000.0,
+          "weight_boom_exposure_limit": 2.0,
+          "weight_cutoff_shortfall": 0.0,
+          "weight_speed": 1.0,
+          "weight_fuel": 0.1,
+          "unpopulated_speed_weight_bonus": 0.0
+        }
+      },
+      "guidance_overrides": {
+        "boom_avoidance": {
+          "enable_ground_hit_feedback": false,
+          "optimizer": {
+            "enabled": false
+          }
+        }
+      }
+    },
+    "cutoff_optimized": {
+      "notes": "Noise-first hybrid objective",
+      "config_overrides": {
+        "route_optimization": {
+          "weight_population": 4.0,
+          "weight_populated_ground_hits": 3.0,
+          "weight_total_ground_hits": 0.25,
+          "weight_overflight_population": 1.5,
+          "weight_overflight_area": 0.5,
+          "boom_exposure_limit_people": 100000.0,
+          "weight_boom_exposure_limit": 8.0,
+          "min_cutoff_emission_fraction": 0.75,
+          "weight_cutoff_shortfall": 5.0,
+          "weight_speed": 1.0,
+          "weight_fuel": 0.1,
+          "unpopulated_speed_weight_bonus": 0.0
+        }
+      },
+      "guidance_overrides": {
+        "boom_avoidance": {
+          "enable_ground_hit_feedback": true,
+          "optimizer": {
+            "enabled": true
+          }
+        }
+      }
+    }
+  },
+  "corridors": {
+    "msp_dtw": {
+      "origin_name": "MSP",
+      "destination_name": "DTW",
+      "origin_lat_deg": 44.8848,
+      "origin_lon_deg": -93.2223,
+      "destination_lat_deg": 42.2162,
+      "destination_lon_deg": -83.3554,
+      "notes": "Existing mixed Midwest reference corridor"
+    },
+    "dfw_atl": {
+      "origin_name": "DFW",
+      "destination_name": "ATL",
+      "origin_lat_deg": 32.8998,
+      "origin_lon_deg": -97.0403,
+      "destination_lat_deg": 33.6407,
+      "destination_lon_deg": -84.4277,
+      "notes": "Dense southern metro corridor"
+    },
+    "den_slc": {
+      "origin_name": "DEN",
+      "destination_name": "SLC",
+      "origin_lat_deg": 39.8561,
+      "origin_lon_deg": -104.6737,
+      "destination_lat_deg": 40.7899,
+      "destination_lon_deg": -111.9791,
+      "notes": "Sparse mountain-west corridor"
+    },
+    "iad_bos": {
+      "origin_name": "IAD",
+      "destination_name": "BOS",
+      "origin_lat_deg": 38.9531,
+      "origin_lon_deg": -77.4565,
+      "destination_lat_deg": 42.3656,
+      "destination_lon_deg": -71.0096,
+      "notes": "Dense northeast corridor"
+    }
+  },
+  "timestamps_utc": [
+    "2025-01-15T00:00:00Z",
+    "2025-01-15T12:00:00Z",
+    "2025-04-15T00:00:00Z",
+    "2025-04-15T12:00:00Z",
+    "2025-07-15T00:00:00Z",
+    "2025-07-15T12:00:00Z"
+  ],
+  "anchor_scenario_ids": [
+    "msp_dtw__20250115T1200Z",
+    "msp_dtw__20250715T0000Z",
+    "dfw_atl__20250415T1200Z",
+    "den_slc__20250115T0000Z",
+    "iad_bos__20250415T0000Z",
+    "iad_bos__20250715T1200Z"
+  ],
+  "sensitivity_profiles": {
+    "overflight_heavy": {
+      "route_weight_multipliers": {
+        "weight_overflight_population": 1.5,
+        "weight_overflight_area": 1.5,
+        "weight_population": 0.75,
+        "weight_populated_ground_hits": 0.75
+      }
+    },
+    "noise_heavy": {
+      "route_weight_multipliers": {
+        "weight_population": 1.5,
+        "weight_populated_ground_hits": 1.5,
+        "weight_overflight_population": 0.75,
+        "weight_overflight_area": 0.75
+      }
+    },
+    "time_heavy": {
+      "route_weight_multipliers": {
+        "weight_speed": 1.75,
+        "weight_fuel": 1.5
+      }
+    },
+    "hit_radius_small": {
+      "config_overrides": {
+        "population": {
+          "hit_radius_km": 45.0
+        }
+      }
+    },
+    "hit_radius_large": {
+      "config_overrides": {
+        "population": {
+          "hit_radius_km": 120.0
+        }
+      }
+    },
+    "overflight_width_narrow": {
+      "config_overrides": {
+        "population": {
+          "overflight_half_width_km": 10.0
+        }
+      }
+    },
+    "overflight_width_wide": {
+      "config_overrides": {
+        "population": {
+          "overflight_half_width_km": 40.0
+        }
+      }
+    },
+    "envelope_low": {
+      "config_overrides": {
+        "aircraft": {
+          "constant_altitude_m": 15000.0
+        }
+      },
+      "guidance_overrides": {
+        "speed": {
+          "target_mach": 1.17,
+          "effective_mach_target": 1.11
+        }
+      }
+    },
+    "envelope_high": {
+      "config_overrides": {
+        "aircraft": {
+          "constant_altitude_m": 18000.0
+        }
+      },
+      "guidance_overrides": {
+        "speed": {
+          "target_mach": 1.33,
+          "effective_mach_target": 1.21
+        }
+      }
+    },
+    "numerics_high": {
+      "config_overrides": {
+        "grid": {
+          "nx": 128,
+          "ny": 128,
+          "nz": 88
+        },
+        "shock": {
+          "rays_per_emission": 12
+        },
+        "raytrace": {
+          "ds_m": 150.0,
+          "max_steps": 5200
+        }
+      }
+    }
+  },
+  "jobs": 1,
+  "resume": true,
+  "retain_anchor_npz": true
+}

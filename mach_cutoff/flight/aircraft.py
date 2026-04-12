@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 import numpy as np
 
 from ..config import AircraftConfig, ShockConfig
-from ..core.geodesy import enu_basis, geodetic_to_ecef
+from ..core.geodesy import enu_basis
 from .waypoints import FlightPath
 
 
@@ -57,9 +57,8 @@ class PointMassAircraft:
         path_state = self.flight_path.state_at_distance(distance_m)
         lat = path_state["lat_deg"]
         lon = path_state["lon_deg"]
-
-        alt = self.config.constant_altitude_m
-        position_ecef = geodetic_to_ecef(lat, lon, alt)
+        alt = path_state["alt_m"]
+        position_ecef = np.asarray(path_state["ecef_m"], dtype=float)
 
         speed = self._speed_mps
         tangent = np.asarray(path_state["tangent_ecef"], dtype=float)

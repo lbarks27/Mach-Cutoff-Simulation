@@ -44,7 +44,7 @@
   "runtime": {
     "start_time_iso": null,
     "end_time_iso": null,
-    "max_emissions": null,
+    "max_emissions": 180,
     "ray_batch_size": 10
   },
   "population": {
@@ -56,11 +56,11 @@
   },
   "route_optimization": {
     "enabled": true,
-    "max_wall_time_s": 360.0,
-    "reserve_time_for_full_fidelity_s": 100.0,
+    "max_wall_time_s": 240.0,
+    "reserve_time_for_full_fidelity_s": 55.0,
     "seed": 17,
-    "batch_size": 6,
-    "finalists": 4,
+    "batch_size": 4,
+    "finalists": 2,
     "min_control_waypoints": 11,
     "enable_fuel_objective": true,
     "weight_population": 3.5,
@@ -72,16 +72,17 @@
     "min_fuel_weight_scale": 0.0,
     "populated_hit_people_threshold": 1.0,
     "populated_cell_people_threshold": 1.0,
-    "population_guard_hit_radius_km": 90.0
+    "population_guard_hit_radius_km": 90.0,
+    "low_fidelity_max_emissions": 72
   },
   "visualization": {
-    "enable_matplotlib": true,
-    "enable_plotly": true,
-    "enable_pyvista": true,
-    "output_dir": "outputs_full_routeopt",
-    "make_animation": true,
-    "write_html": true,
-    "include_atmosphere": true,
+    "enable_matplotlib": false,
+    "enable_plotly": false,
+    "enable_pyvista": false,
+    "output_dir": "outputs_tuning_fast",
+    "make_animation": false,
+    "write_html": false,
+    "include_atmosphere": false,
     "map_style": "topographic"
   }
 }

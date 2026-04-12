@@ -43,10 +43,12 @@ all = [
 
 [project.scripts]
 mach-cutoff = "mach_cutoff.cli:main"
+mach-cutoff-benchmark = "mach_cutoff.benchmark.cli:main"
 
 [tool.setuptools]
 packages = [
   "mach_cutoff",
+  "mach_cutoff.benchmark",
   "mach_cutoff.atmosphere",
   "mach_cutoff.core",
   "mach_cutoff.flight",
@@ -54,3 +56,6 @@ packages = [
   "mach_cutoff.visualization",
   "mach_cutoff.visualization.backends",
 ]
+
+[tool.setuptools.package-data]
+mach_cutoff = ["data/*.csv"]

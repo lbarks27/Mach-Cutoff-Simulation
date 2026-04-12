@@ -18,6 +18,13 @@ from ..basemap import (
 from ..terrain import downsample_terrain_grid, terrain_grid_from_result
 
 
+def _boom_envelope_plot_points(result: SimulationResult) -> np.ndarray:
+    points = result.boom_envelope_geodetic_points(max_points_per_ray=10, max_total_points=6_000)
+    if points.ndim != 2 or points.shape[0] < 4 or points.shape[1] < 3:
+        return np.empty((0, 3), dtype=float)
+    return np.column_stack([points[:, 1], points[:, 0], points[:, 2]])
+
+
 def render_plotly_bundle(
     result: SimulationResult,
     output_dir: str | Path,
@@ -52,12 +59,20 @@ def render_plotly_bundle(
 
     # 3D figure
     fig3d = go.Figure()
+    boom_envelope_points = _boom_envelope_plot_points(result)
     lon_min = float(np.min(flight_lons)) if flight_lons else -1.0
     lon_max = float(np.max(flight_lons)) if flight_lons else 1.0
     lat_min = float(np.min(flight_lats)) if flight_lats else -1.0
     lat_max = float(np.max(flight_lats)) if flight_lats else 1.0
     z_min_m = float(np.min(flight_alt)) if flight_alt else 0.0
     z_max_m = float(np.max(flight_alt)) if flight_alt else 1.0
+    if boom_envelope_points.size:
+        lon_min = min(lon_min, float(np.min(boom_envelope_points[:, 0])))
+        lon_max = max(lon_max, float(np.max(boom_envelope_points[:, 0])))
+        lat_min = min(lat_min, float(np.min(boom_envelope_points[:, 1])))
+        lat_max = max(lat_max, float(np.max(boom_envelope_points[:, 1])))
+        z_min_m = min(z_min_m, float(np.min(boom_envelope_points[:, 2])))
+        z_max_m = max(z_max_m, float(np.max(boom_envelope_points[:, 2])))
     if terrain_3d is not None:
         t_lat, t_lon, t_elev = terrain_3d
         lon_min = min(lon_min, float(np.min(t_lon)))
@@ -88,6 +103,22 @@ def render_plotly_bundle(
             name="Flight",
         )
     )
+
+    if boom_envelope_points.size:
+        fig3d.add_trace(
+            go.Mesh3d(
+                x=boom_envelope_points[:, 0],
+                y=boom_envelope_points[:, 1],
+                z=boom_envelope_points[:, 2],
+                alphahull=0,
+                color="#4c78a8",
+                opacity=0.12,
+                name="Boom envelope",
+                hoverinfo="skip",
+                flatshading=True,
+                lighting=dict(ambient=0.65, diffuse=0.45, roughness=0.95, specular=0.05),
+            )
+        )
 
     for emission in result.emissions:
         for ray in emission.rays[:max_rays_per_emission]:
@@ -252,12 +283,26 @@ def render_plotly_bundle(
 
     # Ground hits
     fig2d = go.Figure()
+    pop_impact = result.population_impact
     lon_candidates = list(flight_lons)
     lat_candidates = list(flight_lats)
     if lon_hits.size:
         lon_candidates.extend(lon_hits.tolist())
     if lat_hits.size:
         lat_candidates.extend(lat_hits.tolist())
+    if pop_impact is not None and pop_impact.heatmap_population.size:
+        lon_candidates.extend(
+            [
+                float(np.min(pop_impact.heatmap_lon_edges_deg)),
+                float(np.max(pop_impact.heatmap_lon_edges_deg)),
+            ]
+        )
+        lat_candidates.extend(
+            [
+                float(np.min(pop_impact.heatmap_lat_edges_deg)),
+                float(np.max(pop_impact.heatmap_lat_edges_deg)),
+            ]
+        )
     if terrain_2d is not None:
         t_lat2, t_lon2, t_elev2 = terrain_2d
         lon_candidates.extend([float(np.min(t_lon2)), float(np.max(t_lon2))])
@@ -320,6 +365,42 @@ def render_plotly_bundle(
                 hoverinfo="skip",
             )
         )
+
+    if pop_impact is not None and pop_impact.heatmap_population.size:
+        lat_centers = 0.5 * (pop_impact.heatmap_lat_edges_deg[:-1] + pop_impact.heatmap_lat_edges_deg[1:])
+        lon_centers = 0.5 * (pop_impact.heatmap_lon_edges_deg[:-1] + pop_impact.heatmap_lon_edges_deg[1:])
+        pop_heat = np.log10(np.clip(pop_impact.heatmap_population, 0.0, None) + 1.0)
+        fig2d.add_trace(
+            go.Heatmap(
+                x=lon_centers,
+                y=lat_centers,
+                z=pop_heat,
+                colorscale="YlOrRd",
+                opacity=0.38 if not drew_remote_basemap else 0.30,
+                zsmooth="best",
+                name="Population heatmap",
+                colorbar=dict(title="log10(pop/cell + 1)"),
+                hovertemplate=(
+                    "Lon: %{x:.3f}<br>Lat: %{y:.3f}<br>log10(pop/cell + 1): %{z:.2f}"
+                    "<extra>Population</extra>"
+                ),
+            )
+        )
+
+        if np.any(pop_impact.exposed_cell_mask):
+            yy, xx = np.where(pop_impact.exposed_cell_mask)
+            if yy.size:
+                fig2d.add_trace(
+                    go.Scattergl(
+                        x=lon_centers[xx],
+                        y=lat_centers[yy],
+                        mode="markers",
+                        marker=dict(color="gold", size=4, opacity=0.22),
+                        hoverinfo="skip",
+                        name="Estimated boom footprint",
+                    )
+                )
+
     fig2d.add_trace(
         go.Scatter(
             x=flight_lons,
@@ -330,17 +411,45 @@ def render_plotly_bundle(
         )
     )
     if lat_hits.size:
-        fig2d.add_trace(
-            go.Scatter(
-                x=lon_hits,
-                y=lat_hits,
-                mode="markers",
-                marker=dict(color="crimson", size=5, opacity=0.7),
-                name="Ground hits",
+        if (
+            pop_impact is not None
+            and pop_impact.hit_population_within_radius.size == lat_hits.size
+            and np.any(pop_impact.hit_population_within_radius > 0.0)
+        ):
+            hit_pop = np.asarray(pop_impact.hit_population_within_radius, dtype=float)
+            custom = np.column_stack([lat_hits, lon_hits, hit_pop])
+            fig2d.add_trace(
+                go.Scatter(
+                    x=lon_hits,
+                    y=lat_hits,
+                    mode="markers",
+                    marker=dict(
+                        color=hit_pop,
+                        size=6,
+                        opacity=0.82,
+                        colorscale="Turbo",
+                        colorbar=dict(title=f"People within {pop_impact.hit_radius_km:.0f} km"),
+                    ),
+                    customdata=custom,
+                    hovertemplate=(
+                        "Lat: %{customdata[0]:.3f}<br>Lon: %{customdata[1]:.3f}"
+                        "<br>People within radius: %{customdata[2]:,.0f}<extra>Ground hit</extra>"
+                    ),
+                    name="Ground hits",
+                )
             )
-        )
+        else:
+            fig2d.add_trace(
+                go.Scatter(
+                    x=lon_hits,
+                    y=lat_hits,
+                    mode="markers",
+                    marker=dict(color="crimson", size=5, opacity=0.7),
+                    name="Ground hits",
+                )
+            )
     fig2d.update_layout(
-        title="Ground Intersection Footprint",
+        title="Ground Intersection Footprint + Population Exposure",
         xaxis_title="Longitude (deg)",
         yaxis_title="Latitude (deg)",
         xaxis=dict(scaleanchor="y", scaleratio=1),

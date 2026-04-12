@@ -410,7 +410,8 @@ class WaypointGuidanceController:
             mach += float(boom_cfg.source_cutoff_recovery_mach_step)
 
         if self._mode == "terminal":
-            mach = min(mach, max(float(speed_cfg.min_mach), float(speed_cfg.target_mach) - 0.04))
+            # Keep terminal-phase speeds lower to reduce boom footprints near destination metros.
+            mach = min(mach, max(float(speed_cfg.min_mach), float(speed_cfg.target_mach) - 0.18))
         elif self._mode == "takeoff_climb":
             mach = max(mach, float(speed_cfg.min_mach) + 0.01)
         elif self._mode == "abort_failsafe":

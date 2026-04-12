@@ -118,12 +118,26 @@ def render_matplotlib_bundle(
     # Ground-hit map
     fig2, ax2 = plt.subplots(figsize=(10, 6))
     lat_hits, lon_hits, _ = result.all_ground_hits()
+    pop_impact = result.population_impact
     lon_candidates = list(flight_lons)
     lat_candidates = list(flight_lats)
     if lon_hits.size:
         lon_candidates.extend(lon_hits.tolist())
     if lat_hits.size:
         lat_candidates.extend(lat_hits.tolist())
+    if pop_impact is not None and pop_impact.heatmap_population.size:
+        lon_candidates.extend(
+            [
+                float(np.min(pop_impact.heatmap_lon_edges_deg)),
+                float(np.max(pop_impact.heatmap_lon_edges_deg)),
+            ]
+        )
+        lat_candidates.extend(
+            [
+                float(np.min(pop_impact.heatmap_lat_edges_deg)),
+                float(np.max(pop_impact.heatmap_lat_edges_deg)),
+            ]
+        )
     if terrain_2d is not None:
         t_lat2, t_lon2, t_elev2 = terrain_2d
         lon_candidates.extend([float(np.min(t_lon2)), float(np.max(t_lon2))])
@@ -164,12 +178,71 @@ def render_matplotlib_bundle(
         terrain_plot = ax2.contourf(t_lon2, t_lat2, t_elev2, levels=28, cmap=terrain_cmap, alpha=0.5)
         cbar = fig2.colorbar(terrain_plot, ax=ax2, pad=0.02, fraction=0.05)
         cbar.set_label("Terrain elevation (m MSL)")
+
+    if pop_impact is not None and pop_impact.heatmap_population.size:
+        pop_grid = np.asarray(pop_impact.heatmap_population, dtype=float)
+        pop_log = np.log10(np.clip(pop_grid, 0.0, None) + 1.0)
+        pop_mesh = ax2.pcolormesh(
+            pop_impact.heatmap_lon_edges_deg,
+            pop_impact.heatmap_lat_edges_deg,
+            pop_log,
+            cmap="inferno",
+            shading="auto",
+            alpha=0.35 if not drew_remote_basemap else 0.28,
+            zorder=1.25,
+        )
+        pop_cbar = fig2.colorbar(pop_mesh, ax=ax2, pad=0.08, fraction=0.05)
+        pop_cbar.set_label("log10(population per cell + 1)")
+
+        if np.any(pop_impact.exposed_cell_mask):
+            lat_centers = 0.5 * (
+                pop_impact.heatmap_lat_edges_deg[:-1] + pop_impact.heatmap_lat_edges_deg[1:]
+            )
+            lon_centers = 0.5 * (
+                pop_impact.heatmap_lon_edges_deg[:-1] + pop_impact.heatmap_lon_edges_deg[1:]
+            )
+            lon_center_grid, lat_center_grid = np.meshgrid(lon_centers, lat_centers)
+            mask_float = np.where(pop_impact.exposed_cell_mask, 1.0, 0.0)
+            ax2.contour(
+                lon_center_grid,
+                lat_center_grid,
+                mask_float,
+                levels=[0.5],
+                colors=["gold"],
+                linewidths=1.4,
+                alpha=0.95,
+                zorder=2.6,
+            )
+
     if lat_hits.size:
-        ax2.scatter(lon_hits, lat_hits, s=8, alpha=0.6, c="crimson", label="Sonic boom ground hits")
+        hit_label = "Sonic boom ground hits"
+        if (
+            pop_impact is not None
+            and pop_impact.hit_population_within_radius.size == lat_hits.size
+            and np.any(pop_impact.hit_population_within_radius > 0.0)
+        ):
+            hit_pop = np.asarray(pop_impact.hit_population_within_radius, dtype=float)
+            scatter_hits = ax2.scatter(
+                lon_hits,
+                lat_hits,
+                s=18,
+                alpha=0.85,
+                c=hit_pop,
+                cmap="plasma",
+                edgecolors="white",
+                linewidths=0.2,
+                zorder=2.9,
+                label=hit_label,
+            )
+            hit_cbar = fig2.colorbar(scatter_hits, ax=ax2, pad=0.14, fraction=0.05)
+            hit_cbar.set_label(f"People within {pop_impact.hit_radius_km:.0f} km")
+        else:
+            ax2.scatter(lon_hits, lat_hits, s=10, alpha=0.7, c="crimson", zorder=2.9, label=hit_label)
+
     ax2.plot(flight_lons, flight_lats, color="black", linewidth=1.5, label="Flight track")
     ax2.set_xlabel("Longitude (deg)")
     ax2.set_ylabel("Latitude (deg)")
-    ax2.set_title("Ground Intersection Footprint")
+    ax2.set_title("Ground Intersection Footprint + Population Exposure")
     ax2.grid(True, alpha=0.25)
     ax2.set_aspect("equal", adjustable="box")
     ax2.legend(loc="best")

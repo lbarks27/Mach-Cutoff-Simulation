@@ -1,0 +1,60 @@
+{
+  "hrrr": {
+    "cache_dir": ".cache/hrrr",
+    "domain": "conus",
+    "product": "wrfprsf",
+    "use_s3fs": true,
+    "http_fallback": true,
+    "download_workers": 6,
+    "local_grib_dir": null,
+    "keep_downloaded_files": true
+  },
+  "grid": {
+    "half_width_east_m": 180000.0,
+    "half_width_north_m": 180000.0,
+    "min_altitude_m": -500.0,
+    "max_altitude_m": 32000.0,
+    "nx": 88,
+    "ny": 88,
+    "nz": 60,
+    "gradient_step_m": 40.0,
+    "wind_projection_mode": "heading"
+  },
+  "aircraft": {
+    "mach": 1.05,
+    "constant_altitude_m": 18500.0,
+    "reference_sound_speed_mps": 340.29
+  },
+  "shock": {
+    "emission_interval_s": 60.0,
+    "rays_per_emission": 32,
+    "downward_only": true,
+    "azimuth_offset_deg": 0.0,
+    "direction_reference": "aircraft_forward"
+  },
+  "raytrace": {
+    "ds_m": 250.0,
+    "max_steps": 3200,
+    "adaptive": true,
+    "tol": 0.0008,
+    "min_step_m": 25.0,
+    "max_step_m": 1200.0,
+    "stop_on_exit": true
+  },
+  "runtime": {
+    "start_time_iso": null,
+    "end_time_iso": null,
+    "max_emissions": null,
+    "ray_batch_size": 0
+  },
+  "visualization": {
+    "enable_matplotlib": false,
+    "enable_plotly": false,
+    "enable_pyvista": false,
+    "output_dir": "tmp/outputs_msp_srq_medium_noguidance",
+    "make_animation": false,
+    "write_html": false,
+    "include_atmosphere": false,
+    "map_style": "topographic"
+  }
+}

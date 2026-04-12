@@ -44,6 +44,27 @@ def _basemap_plane(extent_lon_lat: tuple[float, float, float, float], z: float):
     return pv.Plane(center=center, direction=(0.0, 0.0, 1.0), i_size=i_size, j_size=j_size, i_resolution=1, j_resolution=1)
 
 
+def _boom_envelope_mesh(result: SimulationResult):
+    import pyvista as pv
+
+    points = result.boom_envelope_geodetic_points(max_points_per_ray=10, max_total_points=4_000)
+    if points.ndim != 2 or points.shape[0] < 4 or points.shape[1] < 3:
+        return None
+
+    shell_points = np.column_stack([points[:, 1], points[:, 0], points[:, 2] / 1000.0])
+    if shell_points.shape[0] < 4:
+        return None
+
+    cloud = pv.PolyData(shell_points)
+    try:
+        volume = cloud.delaunay_3d()
+        shell = volume.extract_geometry()
+    except Exception:
+        return None
+
+    return shell if shell.n_points >= 4 and shell.n_cells > 0 else None
+
+
 def render_pyvista_bundle(
     result: SimulationResult,
     output_dir: str | Path,
@@ -79,6 +100,7 @@ def render_pyvista_bundle(
         terrain_data = downsample_terrain_grid(*terrain_grid, max_points_per_axis=180)
 
     terrain_mesh = None
+    boom_envelope_mesh = _boom_envelope_mesh(result)
     if terrain_data is not None:
         t_lat, t_lon, t_elev = terrain_data
         terrain_mesh = _terrain_mesh(t_lat, t_lon, t_elev / 1000.0)
@@ -92,6 +114,15 @@ def render_pyvista_bundle(
         )
 
     plotter.add_mesh(_polyline(flight_xyz), color="black", line_width=4.0)
+    if boom_envelope_mesh is not None:
+        plotter.add_mesh(
+            boom_envelope_mesh,
+            color="#4c78a8",
+            opacity=0.12,
+            show_edges=True,
+            edge_color="#2f5c88",
+            line_width=1.0,
+        )
 
     for emission in result.emissions:
         for ray in emission.rays[:max_rays_per_emission]:
@@ -187,6 +218,15 @@ def render_pyvista_bundle(
                     )
                 partial_track = flight_xyz[: i + 1]
                 p3.add_mesh(_polyline(partial_track), color="black", line_width=4.0)
+                if boom_envelope_mesh is not None:
+                    p3.add_mesh(
+                        boom_envelope_mesh,
+                        color="#4c78a8",
+                        opacity=0.12,
+                        show_edges=True,
+                        edge_color="#2f5c88",
+                        line_width=1.0,
+                    )
                 for ray in emission.rays[:max_rays_per_emission]:
                     g = ray.trajectory_geodetic
                     pts = np.column_stack([g[:, 1], g[:, 0], g[:, 2] / 1000.0])
@@ -217,6 +257,15 @@ def render_pyvista_bundle(
                     )
                 partial_track = flight_xyz[: i + 1]
                 p3.add_mesh(_polyline(partial_track), color="black", line_width=4.0)
+                if boom_envelope_mesh is not None:
+                    p3.add_mesh(
+                        boom_envelope_mesh,
+                        color="#4c78a8",
+                        opacity=0.12,
+                        show_edges=True,
+                        edge_color="#2f5c88",
+                        line_width=1.0,
+                    )
                 for ray in emission.rays[:max_rays_per_emission]:
                     g = ray.trajectory_geodetic
                     pts = np.column_stack([g[:, 1], g[:, 0], g[:, 2] / 1000.0])

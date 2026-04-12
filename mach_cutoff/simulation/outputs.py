@@ -150,6 +150,35 @@ class AtmosphericGrid3D:
 
 
 @dataclass(slots=True)
+class PopulationImpactResult:
+    dataset_name: str
+    dataset_path: str
+    heatmap_cell_deg: float
+    hit_radius_km: float
+    trace_half_width_km: float
+    overflight_half_width_km: float
+    total_population_in_heatmap: float
+    total_exposed_population: float
+    total_exposed_area_km2: float
+    total_overflight_population: float
+    total_overflight_area_km2: float
+    heatmap_lat_edges_deg: np.ndarray
+    heatmap_lon_edges_deg: np.ndarray
+    heatmap_population: np.ndarray
+    exposed_cell_mask: np.ndarray
+    overflight_cell_mask: np.ndarray
+    hit_lat_deg: np.ndarray
+    hit_lon_deg: np.ndarray
+    hit_emission_index: np.ndarray
+    hit_ray_id: np.ndarray
+    hit_time_utc: list[str]
+    hit_population_within_radius: np.ndarray
+    emission_exposed_population: np.ndarray
+    emission_exposed_area_km2: np.ndarray
+    emission_ground_hit_count: np.ndarray
+
+
+@dataclass(slots=True)
 class SimulationResult:
     emissions: list[EmissionResult]
     config_dict: dict
@@ -159,6 +188,7 @@ class SimulationResult:
     atmospheric_time_series: AtmosphericTimeSeries | None = None
     atmospheric_vertical_profile: AtmosphericVerticalProfile | None = None
     atmospheric_grid_3d: AtmosphericGrid3D | None = None
+    population_impact: PopulationImpactResult | None = None
 
     def all_ground_hits(self):
         lats = []
@@ -172,6 +202,73 @@ class SimulationResult:
                     lons.append(lon)
                     times.append(emission.emission_time_utc.isoformat())
         return np.asarray(lats), np.asarray(lons), times
+
+    def boom_envelope_geodetic_points(
+        self,
+        *,
+        max_points_per_ray: int = 12,
+        max_total_points: int = 8_000,
+        include_flight_track: bool = True,
+    ) -> np.ndarray:
+        """Return sampled geodetic points approximating the full boom propagation envelope.
+
+        Columns are ordered as ``[lat_deg, lon_deg, alt_m]``.
+        """
+        if max_points_per_ray < 2:
+            raise ValueError("max_points_per_ray must be >= 2")
+        if max_total_points < 4:
+            raise ValueError("max_total_points must be >= 4")
+
+        point_sets: list[np.ndarray] = []
+
+        if include_flight_track and self.emissions:
+            flight_points = np.asarray(
+                [
+                    [e.aircraft_lat_deg, e.aircraft_lon_deg, e.aircraft_alt_m]
+                    for e in self.emissions
+                ],
+                dtype=float,
+            )
+            flight_points = flight_points[np.all(np.isfinite(flight_points), axis=1)]
+            if flight_points.size:
+                point_sets.append(flight_points)
+
+        for emission in self.emissions:
+            for ray in emission.rays:
+                g = np.asarray(ray.trajectory_geodetic, dtype=float)
+                if g.ndim != 2 or g.shape[1] < 3 or g.shape[0] == 0:
+                    continue
+                g = g[:, :3]
+                finite_mask = np.all(np.isfinite(g), axis=1)
+                if not np.any(finite_mask):
+                    continue
+                g = g[finite_mask]
+                if g.shape[0] > max_points_per_ray:
+                    idx = np.linspace(0, g.shape[0] - 1, num=max_points_per_ray, dtype=int)
+                    g = g[idx]
+                point_sets.append(g)
+
+        if not point_sets:
+            return np.empty((0, 3), dtype=float)
+
+        points = np.vstack(point_sets)
+        if points.shape[0] <= max_total_points:
+            return np.unique(points, axis=0)
+
+        keep_idx: set[int] = set()
+        for axis in range(points.shape[1]):
+            keep_idx.add(int(np.argmin(points[:, axis])))
+            keep_idx.add(int(np.argmax(points[:, axis])))
+
+        if len(keep_idx) >= max_total_points:
+            ordered_keep = np.asarray(sorted(keep_idx), dtype=int)[:max_total_points]
+            return np.unique(points[ordered_keep], axis=0)
+
+        stride_count = max_total_points - len(keep_idx)
+        sample_idx = np.linspace(0, points.shape[0] - 1, num=stride_count, dtype=int)
+        keep_idx.update(int(i) for i in sample_idx.tolist())
+        ordered_idx = np.asarray(sorted(keep_idx), dtype=int)[:max_total_points]
+        return np.unique(points[ordered_idx], axis=0)
 
     def save_json_summary(self, path: str | Path):
         path = Path(path)
@@ -225,6 +322,60 @@ class SimulationResult:
             summary["num_atmospheric_profile_levels"] = int(self.atmospheric_vertical_profile.altitude_m.size)
         if self.atmospheric_grid_3d is not None:
             summary["atmospheric_grid_shape"] = [int(v) for v in self.atmospheric_grid_3d.temperature_k.shape]
+
+        if self.population_impact is not None:
+            pop = self.population_impact
+            pop_summary: dict[str, object] = {
+                "dataset_name": pop.dataset_name,
+                "dataset_path": pop.dataset_path,
+                "heatmap_cell_deg": float(pop.heatmap_cell_deg),
+                "hit_radius_km": float(pop.hit_radius_km),
+                "trace_half_width_km": float(pop.trace_half_width_km),
+                "overflight_half_width_km": float(pop.overflight_half_width_km),
+                "total_population_in_heatmap": float(pop.total_population_in_heatmap),
+                "total_exposed_population": float(pop.total_exposed_population),
+                "total_exposed_area_km2": float(pop.total_exposed_area_km2),
+                "total_overflight_population": float(pop.total_overflight_population),
+                "total_overflight_area_km2": float(pop.total_overflight_area_km2),
+            }
+
+            if pop.hit_population_within_radius.size:
+                ranked = np.argsort(pop.hit_population_within_radius)[::-1]
+                top_hits = []
+                for rank_i in ranked[:10]:
+                    idx = int(rank_i)
+                    top_hits.append(
+                        {
+                            "hit_index": idx,
+                            "emission_index": int(pop.hit_emission_index[idx]),
+                            "ray_id": int(pop.hit_ray_id[idx]),
+                            "time_utc": pop.hit_time_utc[idx],
+                            "lat_deg": float(pop.hit_lat_deg[idx]),
+                            "lon_deg": float(pop.hit_lon_deg[idx]),
+                            "population_within_radius": float(pop.hit_population_within_radius[idx]),
+                        }
+                    )
+                pop_summary["top_impacted_ground_hits"] = top_hits
+                pop_summary["max_ground_hit_population_within_radius"] = float(
+                    np.max(pop.hit_population_within_radius)
+                )
+
+            if pop.emission_exposed_population.size:
+                best_emission_idx = int(np.argmax(pop.emission_exposed_population))
+                best_time = ""
+                if 0 <= best_emission_idx < len(self.emissions):
+                    best_time = self.emissions[best_emission_idx].emission_time_utc.isoformat()
+                pop_summary["max_exposed_emission_index"] = best_emission_idx
+                pop_summary["max_exposed_emission_time_utc"] = best_time
+                pop_summary["max_exposed_emission_population"] = float(
+                    pop.emission_exposed_population[best_emission_idx]
+                )
+                pop_summary["mean_exposed_population_per_emission"] = float(np.mean(pop.emission_exposed_population))
+                pop_summary["num_emissions_with_exposed_population"] = int(
+                    np.sum(pop.emission_exposed_population > 0.0)
+                )
+
+            summary["population_analysis"] = pop_summary
         with path.open("w", encoding="utf-8") as f:
             json.dump(summary, f, indent=2)
 
@@ -306,6 +457,35 @@ class SimulationResult:
                 guidance_optimizer_mach_adjustment=np.asarray(
                     [g.optimizer_mach_adjustment for g in guidance_samples], dtype=np.float32
                 ),
+            )
+        if self.population_impact is not None:
+            pop = self.population_impact
+            payload.update(
+                population_dataset_name=np.asarray([pop.dataset_name], dtype="<U256"),
+                population_dataset_path=np.asarray([pop.dataset_path], dtype="<U512"),
+                population_heatmap_cell_deg=np.asarray([pop.heatmap_cell_deg], dtype=np.float32),
+                population_hit_radius_km=np.asarray([pop.hit_radius_km], dtype=np.float32),
+                population_trace_half_width_km=np.asarray([pop.trace_half_width_km], dtype=np.float32),
+                population_overflight_half_width_km=np.asarray([pop.overflight_half_width_km], dtype=np.float32),
+                population_total_in_heatmap=np.asarray([pop.total_population_in_heatmap], dtype=np.float64),
+                population_total_exposed=np.asarray([pop.total_exposed_population], dtype=np.float64),
+                population_total_exposed_area_km2=np.asarray([pop.total_exposed_area_km2], dtype=np.float64),
+                population_total_overflight=np.asarray([pop.total_overflight_population], dtype=np.float64),
+                population_total_overflight_area_km2=np.asarray([pop.total_overflight_area_km2], dtype=np.float64),
+                population_heatmap_lat_edges_deg=np.asarray(pop.heatmap_lat_edges_deg, dtype=np.float32),
+                population_heatmap_lon_edges_deg=np.asarray(pop.heatmap_lon_edges_deg, dtype=np.float32),
+                population_heatmap_people=np.asarray(pop.heatmap_population, dtype=np.float32),
+                population_exposed_cell_mask=np.asarray(pop.exposed_cell_mask, dtype=np.uint8),
+                population_overflight_cell_mask=np.asarray(pop.overflight_cell_mask, dtype=np.uint8),
+                population_hit_lat_deg=np.asarray(pop.hit_lat_deg, dtype=np.float32),
+                population_hit_lon_deg=np.asarray(pop.hit_lon_deg, dtype=np.float32),
+                population_hit_emission_index=np.asarray(pop.hit_emission_index, dtype=np.int32),
+                population_hit_ray_id=np.asarray(pop.hit_ray_id, dtype=np.int32),
+                population_hit_time_utc=np.asarray(pop.hit_time_utc, dtype="<U64"),
+                population_hit_people_within_radius=np.asarray(pop.hit_population_within_radius, dtype=np.float32),
+                population_emission_exposed_people=np.asarray(pop.emission_exposed_population, dtype=np.float32),
+                population_emission_exposed_area_km2=np.asarray(pop.emission_exposed_area_km2, dtype=np.float32),
+                population_emission_ground_hit_count=np.asarray(pop.emission_ground_hit_count, dtype=np.int32),
             )
         np.savez_compressed(path, **payload)
 

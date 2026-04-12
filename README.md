@@ -9,7 +9,10 @@ This project provides a modular, research-oriented Python simulation for superso
 3. Converts atmospheric state (`pressure`, `temperature`, `humidity`, `wind`) to an **acoustic effective refractive index** field.
 4. Simulates a supersonic point-mass aircraft and emits shock rays (wavefront-normal approximation).
 5. Ray-traces propagation in a WGS84-aware setup and records ground-intersection footprints.
-6. Produces multiple visualization options:
+6. Optionally overlays population data to estimate:
+   - local population around each ground-hit point
+   - total population in traced ground-impact envelopes between hits
+7. Produces multiple visualization options:
    - Matplotlib (terrain-aware static + GIF animation)
    - Plotly (terrain-aware interactive HTML)
      - Includes 3D atmospheric overlay (`plotly_atmosphere_3d.html`) with measure toggles and wind vectors
@@ -30,6 +33,8 @@ This project provides a modular, research-oriented Python simulation for superso
 - `mach_cutoff/atmosphere/interpolation.py`: HRRR interpolation
 - `mach_cutoff/atmosphere/acoustics.py`: sound-speed + effective-index field
 - `mach_cutoff/simulation/engine.py`: end-to-end pipeline
+- `mach_cutoff/simulation/population.py`: population heatmap loading + exposure analysis
+- `mach_cutoff/simulation/route_optimizer.py`: iterative rerun optimizer (low-fidelity search + full-fidelity finalists)
 - `mach_cutoff/visualization/backends/*`: plotting backends
 - `mach_cutoff/cli.py`: command line entrypoint
 
@@ -118,6 +123,56 @@ python3 -m mach_cutoff.cli \
 - `--interactive` (opens live windows for matplotlib/pyvista and opens plotly 3D HTML in browser)
 - `--map-style {topographic,road,satellite}` (switch map/basemap style across visualization outputs)
 - `--guidance-config <path>` (load dedicated guidance dynamics/controller settings)
+- `--optimize-routing` / `--no-optimize-routing` (override `route_optimization.enabled` from config)
+- `--optimizer-*` flags now act as overrides for `route_optimization.*` config values
+
+### Iterative route optimization
+
+```bash
+python3 -m mach_cutoff.cli \
+  --waypoints examples/waypoints_msp_dtw.json \
+  --config examples/config_population_example.json \
+  --guidance-config examples/guidance_example.json \
+  --output-dir outputs_opt
+```
+
+Behavior:
+
+- Runs repeated low-fidelity sims with deterministic candidate generation.
+- Candidate mutations are phase-aware (`takeoff_climb`, `enroute`, `terminal`) and keep baseline as a failsafe candidate.
+- Objective combines population exposure, ground-reaching boom penalties, speed/time proxy, and optional fuel proxy.
+- Can apply a soft boom-exposure limit (`boom_exposure_limit_people`) so cutoff-aware routes optimize for time while staying below a declared study threshold.
+- Can apply a cutoff target (`min_cutoff_emission_fraction`) so cutoff-aware routes are penalized when too much of the route still produces ground-reaching boom.
+- Promotes top low-fidelity candidates to full-fidelity sims and selects the best final route.
+- Subsonic emissions are suppressed from ray generation (`effective_mach <= 1.0` or aircraft `mach <= 1.0`).
+
+Optimization settings live in main config under `route_optimization`:
+
+```json
+"route_optimization": {
+  "enabled": true,
+  "max_wall_time_s": 420.0,
+  "seed": 17,
+  "batch_size": 4,
+  "finalists": 3,
+  "enable_fuel_objective": true,
+  "weight_population": 1.0,
+  "boom_exposure_limit_people": 100000.0,
+  "weight_boom_exposure_limit": 8.0,
+  "min_cutoff_emission_fraction": 0.75,
+  "weight_cutoff_shortfall": 5.0,
+  "weight_speed": 0.35,
+  "weight_fuel": 0.2
+}
+```
+
+Optimization artifacts are written under `outputs_opt/optimization/`:
+
+- `optimized_waypoints.json`
+- `optimization_report.json`
+- `optimization_iteration_metrics.csv`
+- `low_fidelity_candidates/*`
+- `full_fidelity_finalists/*`
 
 ## Guidance config (phase 1)
 
@@ -137,11 +192,40 @@ Guidance is configured separately from the main experiment config to keep contro
 - `outputs/simulation_summary.json`
 - `outputs/simulation_hits.npz`
 - `outputs/google_earth_overlay.kml` (open in Google Earth for true globe-map overlay)
+- If optimization is enabled: `outputs/optimization/*` with candidate-by-candidate objective traces and route files
 - Summary/NPZ include guidance diagnostics (mode counts, cross-track statistics, command channels, optimizer cost/risk predictions) when guidance is enabled.
+- If `population.enabled=true`, summary/NPZ include population impact metrics and ranked hit exposure values.
+  - Includes separate direct-overflight corridor metrics (`total_overflight_population`, `total_overflight_area_km2`)
 - Visualization files depending on enabled backends
   - Plotly may include `plotly_atmosphere_3d.html` for gridded atmosphere overlays
   - Plotly includes `plotly_globe.html` for interactive globe-based inspection of flight, rays, and ground hits
+  - Ground-footprint figures include population heatmap + estimated exposed area overlays when enabled
   - Includes atmospheric diagnostics when `visualization.include_atmosphere=true`
+
+## Population impact analysis
+
+Population analysis is controlled by `population.*` in config:
+
+```json
+"population": {
+  "enabled": true,
+  "dataset_path": null,
+  "heatmap_cell_deg": 0.12,
+  "hit_radius_km": 25.0,
+  "trace_half_width_km": 12.0,
+  "overflight_half_width_km": 20.0
+}
+```
+
+- `dataset_path = null` uses bundled sample data: `mach_cutoff/data/us_metro_population_sample.csv`
+- Supported dataset formats:
+  - CSV with columns like `lat_deg`, `lon_deg`, `population`
+  - NPZ point arrays `lat_deg`/`lon_deg`/`population` (or `lat`/`lon`/`pop`)
+  - NPZ gridded arrays `lat_edges_deg`/`lon_edges_deg`/`population_grid`
+- Traced footprints connect/close ground-hit sets and estimate exposed area/population over that envelope.
+- Direct-overflight metrics use aircraft sampled track and `population.overflight_half_width_km`.
+
+Example config: `examples/config_population_example.json`
 
 ### Google Earth overlay
 
@@ -164,7 +248,75 @@ Primary tunables are in `config_example.json`:
 - Shock source density: `shock.*`
 - Integrator controls: `raytrace.*`
 - Runtime trial slicing: `runtime.*`
+- Population impact analysis: `population.*`
+- Route optimization controls: `route_optimization.*`
 - Visualization outputs/toggles: `visualization.*` (including `visualization.include_atmosphere`, `visualization.map_style`)
+
+## Benchmark pipeline
+
+Run the research benchmark with:
+
+```bash
+mach-cutoff-benchmark --benchmark-config examples/benchmark_us_archetypes.json
+```
+
+The bundled benchmark manifest models the study as three route classes:
+
+- `fastest`: time-first supersonic baseline
+- `population_avoidant`: penalizes direct overflight of dense population
+- `cutoff_optimized`: penalizes predicted boom exposure and rewards higher route-level cutoff fraction
+
+The benchmark manifest also declares research-objective thresholds used in the aggregate feasibility assessment:
+
+- `boom_exposure_limit_people`
+- `max_time_penalty_pct`
+- `min_cutoff_emission_fraction`
+- `max_abort_samples`
+- `max_distance_to_destination_m`
+
+Optional flags:
+
+- `--output-root <dir>`
+- `--jobs <int>`
+
+Aggregate benchmark outputs include:
+
+- `aggregate/run_metrics.csv`
+- `aggregate/route_efficiency_summary.csv`
+- `aggregate/feasibility_summary.json`
+- `aggregate/benchmark_report.md`
+- `aggregate/exposure_maps/*.png` for retained anchor scenarios
+- `--resume`
+- `--force`
+- `--skip-sensitivity`
+- `--scenario-id <id>` (repeatable)
+- `--route-class <name>` (repeatable)
+
+Benchmark outputs:
+
+- `benchmarks/<name>/core/<scenario_id>/<route_class>/...`
+- `benchmarks/<name>/sensitivity/<scenario_id>/<route_class>/<profile_id>/...`
+- `benchmarks/<name>/aggregate/run_metrics.csv`
+- `benchmarks/<name>/aggregate/paired_statistics.{csv,json}`
+- `benchmarks/<name>/aggregate/dominance_matrix.csv`
+- `benchmarks/<name>/aggregate/dominance_summary.json`
+- `benchmarks/<name>/aggregate/robustness_summary.json`
+- `benchmarks/<name>/aggregate/benchmark_report.md`
+- `benchmarks/<name>/aggregate/plots/*`
+
+### GPW full population data
+
+The benchmark pipeline can auto-prepare GPWv4 r11 data into a cached NPZ grid:
+
+- checks prepared cache first
+- then checks raw cache
+- downloads raw data when missing (if `gpw.auto_download=true`)
+- preprocesses to `lat_edges_deg/lon_edges_deg/population_grid`
+
+Auth lookup order for download:
+
+1. `EARTHDATA_USERNAME` + `EARTHDATA_PASSWORD`
+2. `~/.netrc` (`urs.earthdata.nasa.gov`)
 
 Shock direction reference toggle:
 
