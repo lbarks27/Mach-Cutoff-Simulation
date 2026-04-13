@@ -139,8 +139,10 @@ def main(argv=None):
                 ro_cfg.max_wall_time_s if args.optimizer_max_wall_time_s is None else args.optimizer_max_wall_time_s
             ),
             reserve_time_for_full_fidelity_s=float(ro_cfg.reserve_time_for_full_fidelity_s),
+            reserve_time_for_mid_fidelity_s=float(ro_cfg.reserve_time_for_mid_fidelity_s),
             seed=int(ro_cfg.seed if args.optimizer_seed is None else args.optimizer_seed),
             batch_size=int(ro_cfg.batch_size if args.optimizer_batch_size is None else args.optimizer_batch_size),
+            semifinalists=int(ro_cfg.semifinalists),
             finalists=int(ro_cfg.finalists if args.optimizer_finalists is None else args.optimizer_finalists),
             elite_pool_size=int(ro_cfg.elite_pool_size),
             max_duplicate_attempts=int(ro_cfg.max_duplicate_attempts),
@@ -155,6 +157,8 @@ def main(argv=None):
             weight_total_ground_hits=float(ro_cfg.weight_total_ground_hits),
             weight_overflight_population=float(ro_cfg.weight_overflight_population),
             weight_overflight_area=float(ro_cfg.weight_overflight_area),
+            weight_route_stretch=float(ro_cfg.weight_route_stretch),
+            weight_route_heading_change=float(ro_cfg.weight_route_heading_change),
             boom_exposure_limit_people=(
                 None if ro_cfg.boom_exposure_limit_people is None else float(ro_cfg.boom_exposure_limit_people)
             ),
@@ -176,6 +180,12 @@ def main(argv=None):
             low_fidelity_step_scale=float(ro_cfg.low_fidelity_step_scale),
             low_fidelity_max_steps_scale=float(ro_cfg.low_fidelity_max_steps_scale),
             low_fidelity_max_emissions=int(ro_cfg.low_fidelity_max_emissions),
+            mid_fidelity_emission_interval_scale=float(ro_cfg.mid_fidelity_emission_interval_scale),
+            mid_fidelity_rays_scale=float(ro_cfg.mid_fidelity_rays_scale),
+            mid_fidelity_grid_scale=float(ro_cfg.mid_fidelity_grid_scale),
+            mid_fidelity_step_scale=float(ro_cfg.mid_fidelity_step_scale),
+            mid_fidelity_max_steps_scale=float(ro_cfg.mid_fidelity_max_steps_scale),
+            mid_fidelity_max_emissions=int(ro_cfg.mid_fidelity_max_emissions),
         )
         optimization_outcome = optimize_route_with_reruns(
             flight_path=flight_path,

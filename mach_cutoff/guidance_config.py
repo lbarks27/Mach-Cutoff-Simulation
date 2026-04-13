@@ -125,6 +125,25 @@ class GuidanceBoomAvoidanceConfig:
 
 
 @dataclass(slots=True)
+class GuidanceExposureCorridorConfig:
+    enabled: bool = False
+    min_lookahead_m: float = 20_000.0
+    max_lookahead_m: float = 180_000.0
+    dense_brake_lookahead_m: float = 60_000.0
+    sample_spacing_m: float = 12_000.0
+    corridor_half_width_km: float = 18.0
+    sparse_density_people_per_km2: float = 2.0
+    dense_density_people_per_km2: float = 80.0
+    sparse_mach_bias: float = 0.035
+    dense_mach_bias: float = 0.075
+    sparse_ground_risk_scale: float = 0.4
+    dense_ground_risk_scale: float = 1.25
+    bias_smoothing: float = 0.25
+    terminal_scale: float = 0.6
+    takeoff_scale: float = 0.5
+
+
+@dataclass(slots=True)
 class GuidanceConfig:
     enabled: bool = True
     integration_dt_s: float = 1.0
@@ -135,6 +154,7 @@ class GuidanceConfig:
     constraints: GuidanceConstraintsConfig = field(default_factory=GuidanceConstraintsConfig)
     mode_switch: GuidanceModeSwitchConfig = field(default_factory=GuidanceModeSwitchConfig)
     boom_avoidance: GuidanceBoomAvoidanceConfig = field(default_factory=GuidanceBoomAvoidanceConfig)
+    exposure_corridor: GuidanceExposureCorridorConfig = field(default_factory=GuidanceExposureCorridorConfig)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "GuidanceConfig":
@@ -150,6 +170,7 @@ class GuidanceConfig:
             constraints=GuidanceConstraintsConfig(**data.get("constraints", {})),
             mode_switch=GuidanceModeSwitchConfig(**data.get("mode_switch", {})),
             boom_avoidance=GuidanceBoomAvoidanceConfig.from_dict(data.get("boom_avoidance", {})),
+            exposure_corridor=GuidanceExposureCorridorConfig(**data.get("exposure_corridor", {})),
         )
 
     def to_dict(self) -> dict[str, Any]:

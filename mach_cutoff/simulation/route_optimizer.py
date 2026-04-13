@@ -27,8 +27,10 @@ _EPS = 1e-9
 class RouteOptimizationSettings:
     max_wall_time_s: float = 300.0
     reserve_time_for_full_fidelity_s: float = 120.0
+    reserve_time_for_mid_fidelity_s: float = 60.0
     seed: int = 17
     batch_size: int = 4
+    semifinalists: int = 6
     finalists: int = 3
     elite_pool_size: int = 6
     max_duplicate_attempts: int = 10
@@ -41,6 +43,8 @@ class RouteOptimizationSettings:
     weight_total_ground_hits: float = 0.35
     weight_overflight_population: float = 0.0
     weight_overflight_area: float = 0.0
+    weight_route_stretch: float = 0.0
+    weight_route_heading_change: float = 0.0
     boom_exposure_limit_people: float | None = None
     weight_boom_exposure_limit: float = 0.0
     min_cutoff_emission_fraction: float | None = None
@@ -58,6 +62,12 @@ class RouteOptimizationSettings:
     low_fidelity_step_scale: float = 1.8
     low_fidelity_max_steps_scale: float = 0.45
     low_fidelity_max_emissions: int = 96
+    mid_fidelity_emission_interval_scale: float = 1.35
+    mid_fidelity_rays_scale: float = 0.65
+    mid_fidelity_grid_scale: float = 0.8
+    mid_fidelity_step_scale: float = 1.25
+    mid_fidelity_max_steps_scale: float = 0.75
+    mid_fidelity_max_emissions: int = 160
 
 
 @dataclass(slots=True)
@@ -76,6 +86,8 @@ class ObjectiveMetrics:
     fuel_proxy: float
     mean_ground_speed_mps: float
     route_distance_km: float
+    route_excess_ratio: float
+    route_heading_change_deg: float
     distance_to_destination_m: float
     abort_samples: int
 
@@ -92,6 +104,8 @@ class ObjectiveNormalizer:
     time_scale: float
     fuel_scale: float
     speed_scale: float
+    route_excess_scale: float
+    route_heading_change_scale: float
 
 
 @dataclass(slots=True)
@@ -115,6 +129,8 @@ class _Candidate:
     guidance_mutation: dict[str, float]
     low_metrics: ObjectiveMetrics | None = None
     low_score: float | None = None
+    mid_metrics: ObjectiveMetrics | None = None
+    mid_score: float | None = None
     full_metrics: ObjectiveMetrics | None = None
     full_score: float | None = None
 
@@ -154,6 +170,37 @@ def _compute_cumulative_lengths_m(waypoints: list[Waypoint]) -> tuple[np.ndarray
     segment = np.linalg.norm(np.diff(ecef, axis=0), axis=1)
     cumulative = np.concatenate([np.asarray([0.0], dtype=np.float64), np.cumsum(segment)])
     return cumulative, float(cumulative[-1])
+
+
+def _route_shape_metrics(waypoints: list[Waypoint]) -> tuple[float, float]:
+    if len(waypoints) < 2:
+        return 0.0, 0.0
+
+    lat = np.asarray([wp.lat_deg for wp in waypoints], dtype=np.float64)
+    lon = normalize_lon_deg(np.asarray([wp.lon_deg for wp in waypoints], dtype=np.float64))
+    seg_km = _haversine_km(lat[:-1], lon[:-1], lat[1:], lon[1:])
+    route_distance_km = float(np.sum(seg_km))
+    direct_distance_km = float(_haversine_km(lat[0], lon[0], lat[-1], lon[-1]))
+    route_excess_ratio = max(0.0, route_distance_km / max(direct_distance_km, 1e-6) - 1.0)
+
+    heading_change_deg = 0.0
+    for idx in range(1, len(waypoints) - 1):
+        lat_mid = float(waypoints[idx].lat_deg)
+        meters_per_lon = max(1.0, _M_PER_DEG * float(np.cos(np.deg2rad(lat_mid))))
+        in_e = float((waypoints[idx].lon_deg - waypoints[idx - 1].lon_deg) * meters_per_lon)
+        in_n = float((waypoints[idx].lat_deg - waypoints[idx - 1].lat_deg) * _M_PER_DEG)
+        out_e = float((waypoints[idx + 1].lon_deg - waypoints[idx].lon_deg) * meters_per_lon)
+        out_n = float((waypoints[idx + 1].lat_deg - waypoints[idx].lat_deg) * _M_PER_DEG)
+        in_norm = float(np.hypot(in_e, in_n))
+        out_norm = float(np.hypot(out_e, out_n))
+        if in_norm <= 1.0 or out_norm <= 1.0:
+            continue
+        in_heading = float(np.arctan2(in_e, in_n))
+        out_heading = float(np.arctan2(out_e, out_n))
+        delta = float((out_heading - in_heading + np.pi) % (2.0 * np.pi) - np.pi)
+        heading_change_deg += abs(float(np.rad2deg(delta)))
+
+    return float(route_excess_ratio), float(heading_change_deg)
 
 
 def _population_cell_areas_km2(lat_edges_deg: np.ndarray, lon_edges_deg: np.ndarray) -> np.ndarray:
@@ -218,12 +265,25 @@ def _phase_for_waypoint(waypoint: Waypoint, along_m: float, total_m: float, guid
     return "enroute"
 
 
-def _phase_mutation_params(phase: str) -> tuple[float, float, float]:
+def _phase_mutation_params(phase: str, total_m: float) -> tuple[float, float, float]:
+    route_scale_m = max(float(total_m), 1.0)
     if phase == "takeoff_climb":
-        return 2_500.0, 380.0, 0.45
+        return (
+            _clip(0.015 * route_scale_m, 2_500.0, 15_000.0),
+            450.0,
+            0.45,
+        )
     if phase == "terminal":
-        return 6_500.0, 550.0, 0.60
-    return 20_000.0, 1_200.0, 0.82
+        return (
+            _clip(0.040 * route_scale_m, 6_500.0, 40_000.0),
+            700.0,
+            0.60,
+        )
+    return (
+        _clip(0.100 * route_scale_m, 20_000.0, 120_000.0),
+        1_600.0,
+        0.82,
+    )
 
 
 def _mutate_waypoints(
@@ -246,7 +306,7 @@ def _mutate_waypoints(
     for idx in interior_indices:
         wp = base_waypoints[idx]
         phase = _phase_for_waypoint(wp, float(cumulative_m[idx]), total_m, guidance_cfg)
-        lateral_max_m, altitude_max_m, mutation_probability = _phase_mutation_params(phase)
+        lateral_max_m, altitude_max_m, mutation_probability = _phase_mutation_params(phase, total_m)
         if float(rng.random()) > mutation_probability:
             continue
 
@@ -284,7 +344,7 @@ def _mutate_waypoints(
         idx = int(interior_indices[int(rng.integers(0, len(interior_indices)))])
         wp = base_waypoints[idx]
         phase = _phase_for_waypoint(wp, float(cumulative_m[idx]), total_m, guidance_cfg)
-        lateral_max_m, altitude_max_m, _ = _phase_mutation_params(phase)
+        lateral_max_m, altitude_max_m, _ = _phase_mutation_params(phase, total_m)
         new_lat = _clip(wp.lat_deg + float(rng.normal(0.0, lateral_max_m * 0.12)) / _M_PER_DEG, -89.8, 89.8)
         meters_per_lon = max(1.0, _M_PER_DEG * float(np.cos(np.deg2rad(new_lat))))
         new_lon = _wrap_lon_deg(wp.lon_deg + float(rng.normal(0.0, lateral_max_m * 0.12)) / meters_per_lon)
@@ -296,7 +356,11 @@ def _mutate_waypoints(
     return waypoints, phase_counts, mutated_count
 
 
-def _mutate_guidance(base_guidance: GuidanceConfig, rng: np.random.Generator) -> tuple[GuidanceConfig, dict[str, float]]:
+def _mutate_guidance(
+    base_guidance: GuidanceConfig,
+    rng: np.random.Generator,
+    settings: RouteOptimizationSettings,
+) -> tuple[GuidanceConfig, dict[str, float]]:
     cfg = _clone_guidance_config(base_guidance)
     mutation: dict[str, float] = {}
     if not cfg.enabled:
@@ -305,17 +369,30 @@ def _mutate_guidance(base_guidance: GuidanceConfig, rng: np.random.Generator) ->
     min_mach = float(cfg.speed.min_mach)
     max_mach = float(cfg.speed.max_mach)
     current_target = float(cfg.speed.target_mach)
-    target_delta = _clip(float(rng.normal(0.0, 0.02)), -0.06, 0.06)
+    slower_bias = 0.0
+    if settings.min_cutoff_emission_fraction is not None:
+        slower_bias += 0.05
+    slower_bias += 0.012 * float(min(settings.weight_total_ground_hits, 4.0))
+    target_delta = float(rng.normal(-slower_bias, 0.05))
+    if float(rng.random()) < 0.20:
+        target_delta += float(rng.normal(-0.5 * slower_bias, 0.08))
+    target_delta = _clip(target_delta, -0.20, 0.12)
     new_target = _clip(current_target + target_delta, min_mach, max_mach)
     cfg.speed.target_mach = float(new_target)
     mutation["target_mach_delta"] = float(new_target - current_target)
 
     effective_target = float(cfg.speed.effective_mach_target)
-    effective_delta = _clip(float(rng.normal(0.0, 0.01)), -0.03, 0.03)
-    new_effective_target = _clip(effective_target + effective_delta, 0.95, max_mach)
+    effective_delta = _clip(float(rng.normal(-0.35 * slower_bias, 0.03)), -0.10, 0.08)
+    new_effective_target = _clip(effective_target + effective_delta, 0.95, new_target)
     cfg.speed.effective_mach_target = float(new_effective_target)
     mutation["effective_mach_target_delta"] = float(new_effective_target - effective_target)
     return cfg, mutation
+
+
+def _estimate_required_low_fidelity_emissions(flight_path: FlightPath, emission_interval_s: float) -> int:
+    route_duration_s = max(60.0, float(flight_path.duration_s))
+    interval_s = max(float(emission_interval_s), 1.0)
+    return int(np.ceil(route_duration_s / interval_s)) + 3
 
 
 def _compute_metrics(
@@ -324,6 +401,7 @@ def _compute_metrics(
     cfg: ExperimentConfig,
     settings: RouteOptimizationSettings,
 ) -> ObjectiveMetrics:
+    route_excess_ratio, route_heading_change_deg = _route_shape_metrics(list(flight_path.waypoints))
     ground_hit_count = int(sum(1 for emission in result.emissions for ray in emission.rays if ray.ground_hit))
     exposure_people = 0.0
     overflight_population = 0.0
@@ -390,6 +468,8 @@ def _compute_metrics(
             fuel_proxy=float(fuel_proxy),
             mean_ground_speed_mps=float(mean_speed_mps),
             route_distance_km=float(route_distance_km),
+            route_excess_ratio=float(route_excess_ratio),
+            route_heading_change_deg=float(route_heading_change_deg),
             distance_to_destination_m=float(distance_to_destination_m),
             abort_samples=abort_samples,
         )
@@ -422,6 +502,8 @@ def _compute_metrics(
             fuel_proxy=float(fuel_proxy),
             mean_ground_speed_mps=float(mean_speed_mps),
             route_distance_km=float(route_distance_km),
+            route_excess_ratio=float(route_excess_ratio),
+            route_heading_change_deg=float(route_heading_change_deg),
             distance_to_destination_m=float(distance_to_destination_m),
             abort_samples=abort_samples,
         )
@@ -477,6 +559,8 @@ def _compute_metrics(
         fuel_proxy=float(fuel_proxy),
         mean_ground_speed_mps=float(mean_speed_mps),
         route_distance_km=float(route_distance_km),
+        route_excess_ratio=float(route_excess_ratio),
+        route_heading_change_deg=float(route_heading_change_deg),
         distance_to_destination_m=float(distance_to_destination_m),
         abort_samples=int(abort_samples),
     )
@@ -494,6 +578,8 @@ def _normalizer_from_baseline(baseline: ObjectiveMetrics) -> ObjectiveNormalizer
         time_scale=max(1.0, float(baseline.time_proxy_s)),
         fuel_scale=max(1.0, float(baseline.fuel_proxy)),
         speed_scale=max(1.0, float(baseline.mean_ground_speed_mps)),
+        route_excess_scale=max(0.01, float(baseline.route_excess_ratio), 0.01),
+        route_heading_change_scale=max(1.0, float(baseline.route_heading_change_deg), 1.0),
     )
 
 
@@ -505,10 +591,14 @@ def _score_metrics(metrics: ObjectiveMetrics, norm: ObjectiveNormalizer, setting
     populated_hit_pop_norm = float(metrics.populated_hit_population / norm.populated_hit_population_scale)
     populated_area_norm = float(metrics.populated_exposed_area_km2 / norm.populated_exposed_area_scale)
     overflight_area_norm = float(metrics.overflight_area_km2 / norm.overflight_area_scale)
+    route_excess_norm = float(metrics.route_excess_ratio / norm.route_excess_scale)
+    route_heading_change_norm = float(metrics.route_heading_change_deg / norm.route_heading_change_scale)
 
     pop_term = float(settings.weight_population) * pop_norm
     overflight_pop_term = float(settings.weight_overflight_population) * overflight_pop_norm
     overflight_area_term = float(settings.weight_overflight_area) * overflight_area_norm
+    route_stretch_term = float(settings.weight_route_stretch) * route_excess_norm
+    route_heading_term = float(settings.weight_route_heading_change) * route_heading_change_norm
     populated_hit_term = float(settings.weight_populated_ground_hits) * (
         populated_hits_norm + 0.5 * populated_hit_pop_norm
     )
@@ -561,6 +651,8 @@ def _score_metrics(metrics: ObjectiveMetrics, norm: ObjectiveNormalizer, setting
         pop_term
         + overflight_pop_term
         + overflight_area_term
+        + route_stretch_term
+        + route_heading_term
         + populated_hit_term
         + populated_area_term
         + total_ground_hit_term
@@ -609,7 +701,11 @@ def _candidate_rank_key(
     )
 
 
-def _build_low_fidelity_config(full_cfg: ExperimentConfig, settings: RouteOptimizationSettings) -> ExperimentConfig:
+def _build_low_fidelity_config(
+    full_cfg: ExperimentConfig,
+    flight_path: FlightPath,
+    settings: RouteOptimizationSettings,
+) -> ExperimentConfig:
     cfg = _clone_experiment_config(full_cfg)
     cfg.shock.emission_interval_s = max(1.0, float(cfg.shock.emission_interval_s) * float(settings.low_fidelity_emission_interval_scale))
     cfg.shock.rays_per_emission = max(8, int(round(float(cfg.shock.rays_per_emission) * float(settings.low_fidelity_rays_scale))))
@@ -618,10 +714,53 @@ def _build_low_fidelity_config(full_cfg: ExperimentConfig, settings: RouteOptimi
     cfg.grid.nz = max(20, int(round(float(cfg.grid.nz) * float(settings.low_fidelity_grid_scale))))
     cfg.raytrace.ds_m = max(30.0, float(cfg.raytrace.ds_m) * float(settings.low_fidelity_step_scale))
     cfg.raytrace.max_steps = max(300, int(round(float(cfg.raytrace.max_steps) * float(settings.low_fidelity_max_steps_scale))))
+    required_emissions = _estimate_required_low_fidelity_emissions(flight_path, float(cfg.shock.emission_interval_s))
+    min_low_fidelity_emissions = int(max(8, settings.low_fidelity_max_emissions))
+    required_emissions = max(required_emissions, min_low_fidelity_emissions)
     if cfg.runtime.max_emissions is None:
-        cfg.runtime.max_emissions = int(max(8, settings.low_fidelity_max_emissions))
+        cfg.runtime.max_emissions = int(required_emissions)
     else:
-        cfg.runtime.max_emissions = int(min(cfg.runtime.max_emissions, max(8, settings.low_fidelity_max_emissions)))
+        cfg.runtime.max_emissions = int(max(cfg.runtime.max_emissions, required_emissions))
+    cfg.visualization.enable_matplotlib = False
+    cfg.visualization.enable_plotly = False
+    cfg.visualization.enable_pyvista = False
+    cfg.visualization.make_animation = False
+    cfg.visualization.write_html = False
+    cfg.visualization.include_atmosphere = False
+    cfg.population.enabled = True
+    cfg.population.hit_radius_km = max(float(cfg.population.hit_radius_km), float(settings.population_guard_hit_radius_km))
+    return cfg
+
+
+def _build_mid_fidelity_config(
+    full_cfg: ExperimentConfig,
+    flight_path: FlightPath,
+    settings: RouteOptimizationSettings,
+) -> ExperimentConfig:
+    cfg = _clone_experiment_config(full_cfg)
+    cfg.shock.emission_interval_s = max(
+        1.0,
+        float(cfg.shock.emission_interval_s) * float(settings.mid_fidelity_emission_interval_scale),
+    )
+    cfg.shock.rays_per_emission = max(
+        8,
+        int(round(float(cfg.shock.rays_per_emission) * float(settings.mid_fidelity_rays_scale))),
+    )
+    cfg.grid.nx = max(24, int(round(float(cfg.grid.nx) * float(settings.mid_fidelity_grid_scale))))
+    cfg.grid.ny = max(24, int(round(float(cfg.grid.ny) * float(settings.mid_fidelity_grid_scale))))
+    cfg.grid.nz = max(24, int(round(float(cfg.grid.nz) * float(settings.mid_fidelity_grid_scale))))
+    cfg.raytrace.ds_m = max(25.0, float(cfg.raytrace.ds_m) * float(settings.mid_fidelity_step_scale))
+    cfg.raytrace.max_steps = max(
+        500,
+        int(round(float(cfg.raytrace.max_steps) * float(settings.mid_fidelity_max_steps_scale))),
+    )
+    required_emissions = _estimate_required_low_fidelity_emissions(flight_path, float(cfg.shock.emission_interval_s))
+    min_mid_fidelity_emissions = int(max(12, settings.mid_fidelity_max_emissions))
+    required_emissions = max(required_emissions, min_mid_fidelity_emissions)
+    if cfg.runtime.max_emissions is None:
+        cfg.runtime.max_emissions = int(required_emissions)
+    else:
+        cfg.runtime.max_emissions = int(max(cfg.runtime.max_emissions, required_emissions))
     cfg.visualization.enable_matplotlib = False
     cfg.visualization.enable_plotly = False
     cfg.visualization.enable_pyvista = False
@@ -649,6 +788,8 @@ def _serialize_metrics(metrics: ObjectiveMetrics) -> dict[str, float | int]:
         "fuel_proxy": float(metrics.fuel_proxy),
         "mean_ground_speed_mps": float(metrics.mean_ground_speed_mps),
         "route_distance_km": float(metrics.route_distance_km),
+        "route_excess_ratio": float(metrics.route_excess_ratio),
+        "route_heading_change_deg": float(metrics.route_heading_change_deg),
         "distance_to_destination_m": float(metrics.distance_to_destination_m),
         "abort_samples": int(metrics.abort_samples),
     }
@@ -713,12 +854,15 @@ def _candidate_to_history_row(candidate: _Candidate, low_dir: Path, full_dir: Pa
         "guidance_effective_target_delta": float(candidate.guidance_mutation.get("effective_mach_target_delta", 0.0)),
         "guidance_target_mach": float(candidate.guidance_config.speed.target_mach),
         "low_score": float(candidate.low_score) if candidate.low_score is not None else None,
+        "mid_score": float(candidate.mid_score) if candidate.mid_score is not None else None,
         "full_score": float(candidate.full_score) if candidate.full_score is not None else None,
         "low_output_dir": str(low_dir),
         "full_output_dir": str(full_dir) if full_dir is not None else "",
     }
     if candidate.low_metrics is not None:
         row.update({f"low_{k}": v for k, v in _serialize_metrics(candidate.low_metrics).items()})
+    if candidate.mid_metrics is not None:
+        row.update({f"mid_{k}": v for k, v in _serialize_metrics(candidate.mid_metrics).items()})
     if candidate.full_metrics is not None:
         row.update({f"full_{k}": v for k, v in _serialize_metrics(candidate.full_metrics).items()})
     return row
@@ -749,16 +893,21 @@ def optimize_route_with_reruns(
     settings = settings or RouteOptimizationSettings()
     settings.max_wall_time_s = max(5.0, float(settings.max_wall_time_s))
     settings.batch_size = max(1, int(settings.batch_size))
+    settings.semifinalists = max(1, int(settings.semifinalists))
     settings.finalists = max(1, int(settings.finalists))
+    settings.finalists = min(settings.finalists, settings.semifinalists)
     settings.elite_pool_size = max(1, int(settings.elite_pool_size))
     settings.max_duplicate_attempts = max(2, int(settings.max_duplicate_attempts))
     settings.min_control_waypoints = max(2, int(settings.min_control_waypoints))
     settings.reserve_time_for_full_fidelity_s = max(0.0, float(settings.reserve_time_for_full_fidelity_s))
+    settings.reserve_time_for_mid_fidelity_s = max(0.0, float(settings.reserve_time_for_mid_fidelity_s))
     settings.population_guard_hit_radius_km = max(1.0, float(settings.population_guard_hit_radius_km))
     settings.weight_populated_ground_hits = max(0.0, float(settings.weight_populated_ground_hits))
     settings.weight_total_ground_hits = max(0.0, float(settings.weight_total_ground_hits))
     settings.weight_overflight_population = max(0.0, float(settings.weight_overflight_population))
     settings.weight_overflight_area = max(0.0, float(settings.weight_overflight_area))
+    settings.weight_route_stretch = max(0.0, float(settings.weight_route_stretch))
+    settings.weight_route_heading_change = max(0.0, float(settings.weight_route_heading_change))
     settings.weight_boom_exposure_limit = max(0.0, float(settings.weight_boom_exposure_limit))
     settings.weight_cutoff_shortfall = max(0.0, float(settings.weight_cutoff_shortfall))
     if settings.boom_exposure_limit_people is not None:
@@ -774,10 +923,18 @@ def optimize_route_with_reruns(
 
     rng = np.random.default_rng(int(settings.seed))
     deadline = time.monotonic() + float(settings.max_wall_time_s)
-    reserve_s = min(float(settings.reserve_time_for_full_fidelity_s), float(settings.max_wall_time_s) * 0.8)
+    full_reserve_s = min(float(settings.reserve_time_for_full_fidelity_s), float(settings.max_wall_time_s) * 0.7)
+    mid_reserve_s = min(
+        float(settings.reserve_time_for_mid_fidelity_s),
+        max(0.0, float(settings.max_wall_time_s) * 0.6 - full_reserve_s),
+    )
+    reserve_s = full_reserve_s + mid_reserve_s
     low_fidelity_deadline = deadline - reserve_s
     if low_fidelity_deadline <= time.monotonic():
         low_fidelity_deadline = deadline
+    mid_fidelity_deadline = deadline - full_reserve_s
+    if mid_fidelity_deadline < low_fidelity_deadline:
+        mid_fidelity_deadline = low_fidelity_deadline
 
     full_cfg = _clone_experiment_config(config)
     full_cfg.population.enabled = True
@@ -785,12 +942,15 @@ def optimize_route_with_reruns(
         float(full_cfg.population.hit_radius_km),
         float(settings.population_guard_hit_radius_km),
     )
-    low_cfg = _build_low_fidelity_config(full_cfg, settings)
+    low_cfg = _build_low_fidelity_config(full_cfg, flight_path, settings)
+    mid_cfg = _build_mid_fidelity_config(full_cfg, flight_path, settings)
 
     optimization_dir = Path(output_dir) / "optimization"
     low_dir = optimization_dir / "low_fidelity_candidates"
+    mid_dir = optimization_dir / "mid_fidelity_semifinalists"
     full_dir = optimization_dir / "full_fidelity_finalists"
     low_dir.mkdir(parents=True, exist_ok=True)
+    mid_dir.mkdir(parents=True, exist_ok=True)
     full_dir.mkdir(parents=True, exist_ok=True)
 
     control_waypoints = _expand_waypoints_for_optimization(list(flight_path.waypoints), settings.min_control_waypoints)
@@ -853,7 +1013,7 @@ def optimize_route_with_reruns(
                     parent.guidance_config,
                     rng,
                 )
-                mutated_guidance, guidance_mutation = _mutate_guidance(parent.guidance_config, rng)
+                mutated_guidance, guidance_mutation = _mutate_guidance(parent.guidance_config, rng, settings)
                 signature = _candidate_signature(mutated_waypoints, mutated_guidance)
                 if signature in signatures:
                     continue
@@ -903,13 +1063,8 @@ def optimize_route_with_reruns(
             stop_reason = "duplicate_candidates_exhausted"
             break
 
-    if (
-        stop_reason == "wall_clock_budget_reached"
-        and reserve_s > 0.0
-        and time.monotonic() >= low_fidelity_deadline
-        and time.monotonic() < deadline
-    ):
-        stop_reason = "reserved_time_for_full_fidelity"
+    if stop_reason == "wall_clock_budget_reached" and reserve_s > 0.0 and time.monotonic() >= low_fidelity_deadline:
+        stop_reason = "reserved_time_for_higher_fidelity"
 
     ranked_low = sorted(
         [c for c in candidates if c.low_score is not None],
@@ -917,27 +1072,68 @@ def optimize_route_with_reruns(
     )
     best_low = ranked_low[0]
 
-    finalists: list[_Candidate] = ranked_low[: min(len(ranked_low), settings.finalists)]
-    if baseline_candidate not in finalists:
-        if finalists:
-            finalists[-1] = baseline_candidate
-        else:
-            finalists = [baseline_candidate]
-    finalists = sorted(
-        finalists,
-        key=lambda c: (
-            c.candidate_id != baseline_candidate.candidate_id,
-            *_candidate_rank_key(c, use_full=False, settings=settings),
+    semifinalists: list[_Candidate] = sorted(
+        ranked_low[: min(len(ranked_low), settings.semifinalists)],
+        key=lambda c: _candidate_rank_key(c, use_full=False, settings=settings),
+    )
+    mid_norm: ObjectiveNormalizer | None = None
+    ranked_mid: list[_Candidate] = []
+    mid_candidate_dirs: dict[str, Path] = {}
+    for idx, candidate in enumerate(semifinalists):
+        if idx > 0 and time.monotonic() >= mid_fidelity_deadline:
+            break
+        print(f"[opt] mid-fidelity evaluate {candidate.candidate_id} ({idx + 1}/{len(semifinalists)})")
+        mid_result, mid_metrics = _evaluate_candidate(candidate, sim_cfg=mid_cfg, settings=settings)
+        candidate.mid_metrics = mid_metrics
+        if mid_norm is None:
+            mid_norm = _normalizer_from_baseline(mid_metrics)
+        candidate.mid_score = _score_metrics(mid_metrics, mid_norm, settings)
+        candidate_mid_dir = mid_dir / candidate.candidate_id
+        candidate_mid_dir.mkdir(parents=True, exist_ok=True)
+        mid_candidate_dirs[candidate.candidate_id] = candidate_mid_dir
+        _write_waypoints_json(candidate_mid_dir / "waypoints.json", candidate.waypoints)
+        mid_result.save_json_summary(candidate_mid_dir / "simulation_summary_mid.json")
+        with (candidate_mid_dir / "objective_mid.json").open("w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "candidate_id": candidate.candidate_id,
+                    "score": float(candidate.mid_score),
+                    "metrics": _serialize_metrics(mid_metrics),
+                },
+                f,
+                indent=2,
+            )
+
+    ranked_mid = sorted(
+        [c for c in semifinalists if c.mid_score is not None],
+        key=lambda c: _candidate_rank_key(c, use_full=False, settings=settings) if c.mid_metrics is None else (
+            float(_constraint_violation_count(c.mid_metrics, settings)),
+            1.0 if (c.mid_metrics.populated_ground_hit_count > 0 or c.mid_metrics.populated_hit_population > 0.0) else 0.0,
+            0.0 if settings.min_cutoff_emission_fraction is None else max(0.0, float(settings.min_cutoff_emission_fraction) - float(c.mid_metrics.cutoff_emission_fraction)),
+            float(c.mid_score),
+            c.candidate_id,
         ),
     )
+    finalists: list[_Candidate] = sorted(
+        (ranked_mid if ranked_mid else semifinalists)[: min(len(ranked_mid if ranked_mid else semifinalists), settings.finalists)],
+        key=lambda c: (
+            float(_constraint_violation_count(c.mid_metrics, settings)) if c.mid_metrics is not None else float(_constraint_violation_count(c.low_metrics, settings) if c.low_metrics is not None else 1),
+            1.0 if ((c.mid_metrics or c.low_metrics) and ((c.mid_metrics or c.low_metrics).populated_ground_hit_count > 0 or (c.mid_metrics or c.low_metrics).populated_hit_population > 0.0)) else 0.0,
+            float(c.mid_score if c.mid_score is not None else c.low_score if c.low_score is not None else float("inf")),
+            c.candidate_id,
+        ),
+    )
+    evaluation_queue = list(finalists)
+    if baseline_candidate not in evaluation_queue:
+        evaluation_queue.append(baseline_candidate)
 
     full_norm: ObjectiveNormalizer | None = None
     full_results: dict[str, SimulationResult] = {}
     full_candidate_dirs: dict[str, Path] = {}
-    for idx, candidate in enumerate(finalists):
+    for idx, candidate in enumerate(evaluation_queue):
         if idx > 0 and time.monotonic() >= deadline:
             break
-        print(f"[opt] full-fidelity evaluate {candidate.candidate_id} ({idx + 1}/{len(finalists)})")
+        print(f"[opt] full-fidelity evaluate {candidate.candidate_id} ({idx + 1}/{len(evaluation_queue)})")
         full_result, full_metrics = _evaluate_candidate(candidate, sim_cfg=full_cfg, settings=settings)
         candidate.full_metrics = full_metrics
         if full_norm is None:
@@ -964,7 +1160,7 @@ def optimize_route_with_reruns(
             )
 
     ranked_full = sorted(
-        [c for c in finalists if c.full_score is not None],
+        [c for c in evaluation_queue if c.full_score is not None],
         key=lambda c: _candidate_rank_key(c, use_full=True, settings=settings),
     )
 
@@ -1060,13 +1256,34 @@ def optimize_route_with_reruns(
         "normalization": asdict(baseline_norm),
         "population_dataset_path": str(full_cfg.population.dataset_path or "bundled:us_metro_population_sample.csv"),
         "low_fidelity_config": low_cfg.to_dict(),
+        "mid_fidelity_config": mid_cfg.to_dict(),
         "baseline_candidate_id": baseline_candidate.candidate_id,
         "best_low_fidelity_candidate_id": best_low.candidate_id,
+        "best_mid_fidelity_candidate_id": None if not ranked_mid else ranked_mid[0].candidate_id,
         "best_final_candidate_id": best_candidate.candidate_id,
+        "best_candidate_id": best_candidate.candidate_id,
+        "best_low_score": None if best_low.low_score is None else float(best_low.low_score),
+        "best_mid_score": None if not ranked_mid or ranked_mid[0].mid_score is None else float(ranked_mid[0].mid_score),
+        "best_full_score": None if best_candidate.full_score is None else float(best_candidate.full_score),
+        "best_low_metrics": None if best_low.low_metrics is None else _serialize_metrics(best_low.low_metrics),
+        "best_mid_metrics": None if not ranked_mid or ranked_mid[0].mid_metrics is None else _serialize_metrics(ranked_mid[0].mid_metrics),
+        "best_full_metrics": None
+        if best_candidate.full_metrics is None
+        else _serialize_metrics(best_candidate.full_metrics),
         "num_low_fidelity_candidates": int(len(candidates)),
+        "num_mid_fidelity_candidates": int(len(ranked_mid)),
         "num_full_fidelity_candidates": int(len(ranked_full)),
         "selected_waypoints_path": str(optimized_waypoints_path),
         "low_fidelity_leaderboard": leaderboard_low,
+        "mid_fidelity_leaderboard": [
+            {
+                "candidate_id": candidate.candidate_id,
+                "mid_score": float(candidate.mid_score),
+                "metrics": _serialize_metrics(candidate.mid_metrics),
+            }
+            for candidate in ranked_mid[: min(20, len(ranked_mid))]
+            if candidate.mid_metrics is not None and candidate.mid_score is not None
+        ],
         "full_fidelity_leaderboard": leaderboard_full,
         "candidate_history": history_rows,
     }

@@ -89,7 +89,12 @@ class MachCutoffSimulator:
 
     def run(self, path: FlightPath) -> SimulationResult:
         if self.guidance_config.enabled:
-            aircraft = GuidedPointMassAircraft(path, self.config.aircraft, self.guidance_config)
+            aircraft = GuidedPointMassAircraft(
+                path,
+                self.config.aircraft,
+                self.guidance_config,
+                population_config=self.config.population,
+            )
             guidance_feedback = GuidanceFeedback()
             wind_for_propagation_enu = np.zeros(3, dtype=float)
         else:
@@ -180,7 +185,6 @@ class MachCutoffSimulator:
                 last_distance_to_destination_m = float(distance_to_destination_m)
                 route_progress_pct = 100.0 * np.clip(1.0 - projected_remaining_m / route_length_m, 0.0, 1.0)
 
-                dirs_ecef = generate_shock_directions(state, self.config.shock)
                 emit_epoch = emit_time.timestamp()
                 elapsed_window_s = max(0.0, emit_epoch - first_emit_epoch)
                 if max_emissions is not None and max_emissions > 0:
@@ -288,7 +292,7 @@ class MachCutoffSimulator:
                     )
 
                 field = None
-                if (not source_mach_cutoff) or atmospheric_grid_3d is None:
+                if not source_mach_cutoff:
                     field, field_meta = build_acoustic_grid_field(
                         interp,
                         aircraft_lat_deg=state.lat_deg,
@@ -393,6 +397,7 @@ class MachCutoffSimulator:
                     emit_time = emit_time + timedelta(seconds=emission_interval_s)
                     continue
 
+                dirs_ecef = generate_shock_directions(state, self.config.shock)
                 ground_hit_count = 0
                 ray_point_count = 0
                 terminal_alt_min_m = np.inf

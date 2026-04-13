@@ -98,8 +98,10 @@ class RouteOptimizationConfig:
     enabled: bool = False
     max_wall_time_s: float = 300.0
     reserve_time_for_full_fidelity_s: float = 120.0
+    reserve_time_for_mid_fidelity_s: float = 60.0
     seed: int = 17
     batch_size: int = 4
+    semifinalists: int = 6
     finalists: int = 3
     elite_pool_size: int = 6
     max_duplicate_attempts: int = 10
@@ -112,6 +114,8 @@ class RouteOptimizationConfig:
     weight_total_ground_hits: float = 0.35
     weight_overflight_population: float = 0.0
     weight_overflight_area: float = 0.0
+    weight_route_stretch: float = 0.0
+    weight_route_heading_change: float = 0.0
     boom_exposure_limit_people: float | None = None
     weight_boom_exposure_limit: float = 0.0
     min_cutoff_emission_fraction: float | None = None
@@ -129,6 +133,12 @@ class RouteOptimizationConfig:
     low_fidelity_step_scale: float = 1.8
     low_fidelity_max_steps_scale: float = 0.45
     low_fidelity_max_emissions: int = 96
+    mid_fidelity_emission_interval_scale: float = 1.35
+    mid_fidelity_rays_scale: float = 0.65
+    mid_fidelity_grid_scale: float = 0.8
+    mid_fidelity_step_scale: float = 1.25
+    mid_fidelity_max_steps_scale: float = 0.75
+    mid_fidelity_max_emissions: int = 160
 
 
 @dataclass(slots=True)

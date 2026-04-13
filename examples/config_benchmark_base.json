@@ -60,11 +60,13 @@
   },
   "route_optimization": {
     "enabled": true,
-    "max_wall_time_s": 120.0,
-    "reserve_time_for_full_fidelity_s": 30.0,
+    "max_wall_time_s": 300.0,
+    "reserve_time_for_mid_fidelity_s": 90.0,
+    "reserve_time_for_full_fidelity_s": 100.0,
     "seed": 17,
     "batch_size": 4,
-    "finalists": 2,
+    "semifinalists": 6,
+    "finalists": 4,
     "elite_pool_size": 4,
     "max_duplicate_attempts": 10,
     "min_control_waypoints": 11,
@@ -88,7 +90,13 @@
     "low_fidelity_grid_scale": 0.55,
     "low_fidelity_step_scale": 1.8,
     "low_fidelity_max_steps_scale": 0.45,
-    "low_fidelity_max_emissions": 96
+    "low_fidelity_max_emissions": 96,
+    "mid_fidelity_emission_interval_scale": 1.35,
+    "mid_fidelity_rays_scale": 0.65,
+    "mid_fidelity_grid_scale": 0.8,
+    "mid_fidelity_step_scale": 1.25,
+    "mid_fidelity_max_steps_scale": 0.75,
+    "mid_fidelity_max_emissions": 160
   },
   "visualization": {
     "enable_matplotlib": false,

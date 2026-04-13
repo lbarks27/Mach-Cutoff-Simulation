@@ -28,8 +28,6 @@ class PointMassAircraft:
     def __init__(self, flight_path: FlightPath, config: AircraftConfig):
         self.flight_path = flight_path
         self.config = config
-        if config.mach <= 1.0:
-            raise ValueError("Aircraft Mach must be > 1.0 for sonic boom simulation")
         self._speed_mps = float(config.mach * config.reference_sound_speed_mps)
         if self._speed_mps <= 0.0:
             raise ValueError("Aircraft speed must be positive")

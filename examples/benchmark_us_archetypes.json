@@ -5,12 +5,13 @@
   "base_guidance_config_path": "guidance_benchmark_base.json",
   "population_cache_dir": "../.cache/population",
   "gpw": {
+    "source": "census_blockgroup",
     "product": "gpwv4_popcount_r11",
     "year": 2020,
     "auto_download": true,
     "raw_cache_dir": "../.cache/population/raw",
     "prepared_cache_dir": "../.cache/population/prepared",
-    "prepared_cell_deg": 0.05,
+    "prepared_cell_deg": 0.02,
     "conus_bounds": [-125.0, 24.0, -66.0, 50.0]
   },
   "research_objectives": {
@@ -33,8 +34,8 @@
           "weight_overflight_area": 0.0,
           "weight_boom_exposure_limit": 0.0,
           "weight_cutoff_shortfall": 0.0,
-          "weight_speed": 4.0,
-          "weight_fuel": 0.35,
+          "weight_speed": 5.0,
+          "weight_fuel": 0.25,
           "unpopulated_speed_weight_bonus": 0.0
         }
       },
@@ -48,54 +49,127 @@
       }
     },
     "population_avoidant": {
-      "notes": "Overflight-first hybrid objective",
+      "notes": "Population-aware route that accelerates aggressively through sparse-water corridors and brakes before populated shorelines",
       "config_overrides": {
         "route_optimization": {
-          "weight_population": 1.2,
-          "weight_populated_ground_hits": 0.8,
+          "weight_population": 6.5,
+          "weight_populated_ground_hits": 10.0,
           "weight_total_ground_hits": 0.1,
-          "weight_overflight_population": 4.0,
-          "weight_overflight_area": 1.5,
-          "boom_exposure_limit_people": 100000.0,
-          "weight_boom_exposure_limit": 2.0,
-          "weight_cutoff_shortfall": 0.0,
-          "weight_speed": 1.0,
-          "weight_fuel": 0.1,
-          "unpopulated_speed_weight_bonus": 0.0
+          "weight_overflight_population": 0.0,
+          "weight_overflight_area": 0.0,
+          "boom_exposure_limit_people": 50000.0,
+          "weight_boom_exposure_limit": 42.0,
+          "min_cutoff_emission_fraction": 0.18,
+          "weight_cutoff_shortfall": 0.75,
+          "weight_speed": 0.75,
+          "weight_fuel": 0.0,
+          "unpopulated_speed_weight_bonus": 2.5
         }
       },
       "guidance_overrides": {
+        "speed": {
+          "target_mach": 1.22,
+          "effective_mach_target": 1.12
+        },
+        "exposure_corridor": {
+          "enabled": true,
+          "min_lookahead_m": 25000.0,
+          "max_lookahead_m": 180000.0,
+          "dense_brake_lookahead_m": 60000.0,
+          "sample_spacing_m": 10000.0,
+          "corridor_half_width_km": 14.0,
+          "sparse_density_people_per_km2": 0.75,
+          "dense_density_people_per_km2": 30.0,
+          "sparse_mach_bias": 0.22,
+          "dense_mach_bias": 0.14,
+          "sparse_ground_risk_scale": 0.04,
+          "dense_ground_risk_scale": 1.75,
+          "bias_smoothing": 0.55,
+          "terminal_scale": 0.5,
+          "takeoff_scale": 0.3
+        },
+        "mode_switch": {
+          "terminal_distance_m": 115000.0
+        },
         "boom_avoidance": {
-          "enable_ground_hit_feedback": false,
+          "enable_ground_hit_feedback": true,
+          "ground_hit_fraction_threshold": 0.26,
+          "altitude_gain_m_per_hit_fraction": 2100.0,
+          "altitude_bias_decay_m_per_step": 70.0,
+          "max_altitude_bias_m": 2600.0,
+          "mach_reduction_per_hit_fraction": 0.015,
+          "source_cutoff_recovery_mach_step": 0.012,
           "optimizer": {
-            "enabled": false
+            "enabled": true,
+            "candidate_altitude_offsets_m": [-1800.0, -1000.0, -500.0, 0.0, 700.0, 1400.0, 2200.0, 3000.0],
+            "candidate_mach_offsets": [-0.18, -0.12, -0.08, -0.04, 0.0, 0.06, 0.12, 0.18],
+            "effective_mach_margin": 1.01,
+            "ground_risk_mach_gain": 0.82,
+            "ground_risk_altitude_relief_per_km": 0.18,
+            "weight_ground_risk": 4.6,
+            "weight_cutoff_risk": 0.75,
+            "weight_tracking": 0.8,
+            "weight_altitude_deviation": 0.1,
+            "weight_mach_deviation": 0.015,
+            "weight_terminal_altitude_bias": 0.08,
+            "max_altitude_adjustment_m": 3600.0,
+            "max_altitude_step_m_per_cycle": 700.0,
+            "max_mach_adjustment": 0.24,
+            "max_mach_step_per_cycle": 0.09
           }
         }
       }
     },
     "cutoff_optimized": {
-      "notes": "Noise-first hybrid objective",
+      "notes": "Ground-hit elimination objective with aggressive cutoff-seeking guidance",
       "config_overrides": {
         "route_optimization": {
-          "weight_population": 4.0,
-          "weight_populated_ground_hits": 3.0,
-          "weight_total_ground_hits": 0.25,
-          "weight_overflight_population": 1.5,
-          "weight_overflight_area": 0.5,
-          "boom_exposure_limit_people": 100000.0,
-          "weight_boom_exposure_limit": 8.0,
-          "min_cutoff_emission_fraction": 0.75,
-          "weight_cutoff_shortfall": 5.0,
-          "weight_speed": 1.0,
-          "weight_fuel": 0.1,
+          "weight_population": 0.25,
+          "weight_populated_ground_hits": 0.5,
+          "weight_total_ground_hits": 5.0,
+          "weight_overflight_population": 0.0,
+          "weight_overflight_area": 0.0,
+          "boom_exposure_limit_people": null,
+          "weight_boom_exposure_limit": 0.0,
+          "min_cutoff_emission_fraction": 0.98,
+          "weight_cutoff_shortfall": 18.0,
+          "weight_speed": 0.15,
+          "weight_fuel": 0.0,
           "unpopulated_speed_weight_bonus": 0.0
         }
       },
       "guidance_overrides": {
+        "speed": {
+          "target_mach": 1.14,
+          "effective_mach_target": 1.05
+        },
+        "mode_switch": {
+          "terminal_distance_m": 180000.0
+        },
         "boom_avoidance": {
           "enable_ground_hit_feedback": true,
+          "ground_hit_fraction_threshold": 0.14,
+          "altitude_gain_m_per_hit_fraction": 3200.0,
+          "altitude_bias_decay_m_per_step": 40.0,
+          "max_altitude_bias_m": 4200.0,
+          "mach_reduction_per_hit_fraction": 0.035,
           "optimizer": {
-            "enabled": true
+            "enabled": true,
+            "candidate_altitude_offsets_m": [-2500.0, -1500.0, -750.0, 0.0, 900.0, 1800.0, 2600.0, 3400.0, 4200.0],
+            "candidate_mach_offsets": [-0.28, -0.2, -0.14, -0.1, -0.06, -0.03, 0.0, 0.02],
+            "effective_mach_margin": 1.025,
+            "ground_risk_mach_gain": 1.2,
+            "ground_risk_altitude_relief_per_km": 0.22,
+            "weight_ground_risk": 8.0,
+            "weight_cutoff_risk": 2.0,
+            "weight_tracking": 0.8,
+            "weight_altitude_deviation": 0.1,
+            "weight_mach_deviation": 0.05,
+            "weight_terminal_altitude_bias": 0.1,
+            "max_altitude_adjustment_m": 6000.0,
+            "max_altitude_step_m_per_cycle": 800.0,
+            "max_mach_adjustment": 0.3,
+            "max_mach_step_per_cycle": 0.08
           }
         }
       }

@@ -6,6 +6,7 @@ import json
 import netrc
 import os
 import zipfile
+from importlib import resources
 from pathlib import Path
 from urllib.parse import urlparse
 from urllib.request import (
@@ -18,6 +19,7 @@ from urllib.request import (
 
 import numpy as np
 
+from .census_blockgroups import ensure_prepared_census_blockgroup_dataset
 from .config import GPWConfig
 
 _DEFAULT_URL_TEMPLATE = (
@@ -27,29 +29,97 @@ _DEFAULT_URL_TEMPLATE = (
 
 
 def ensure_prepared_population_dataset(cfg: GPWConfig) -> Path:
+    source = _normalize_population_source(getattr(cfg, "source", "auto"))
+    if source in {"census", "census_blockgroup", "census_blockgroup_2020"}:
+        try:
+            return ensure_prepared_census_blockgroup_dataset(cfg)
+        except Exception as exc:  # noqa: BLE001
+            fallback = _bundled_proxy_dataset_path()
+            print(
+                "[bench] warn: unable to prepare requested Census block-group population dataset "
+                f"({exc}); falling back to bundled metro proxy CSV {fallback}"
+            )
+            return fallback
+
     prepared_dir = Path(cfg.prepared_cache_dir).expanduser().resolve()
     prepared_dir.mkdir(parents=True, exist_ok=True)
     prepared_name = f"gpwv4_r11_{int(cfg.year)}_conus_{_format_cell_deg(cfg.prepared_cell_deg)}.npz"
     prepared_path = prepared_dir / prepared_name
-    if prepared_path.exists():
+    if prepared_path.exists() and _prepared_dataset_matches_request(prepared_path, cfg):
         return prepared_path
 
     raw_path = _find_raw_dataset(Path(cfg.raw_cache_dir).expanduser().resolve(), year=int(cfg.year))
-    if raw_path is None:
-        if not cfg.auto_download:
-            raise FileNotFoundError(
-                "Prepared GPW cache missing and auto_download=false. "
-                f"Expected prepared cache at {prepared_path}"
-            )
-        raw_path = _download_raw_dataset(cfg)
+    try:
+        if raw_path is None:
+            if not cfg.auto_download:
+                raise FileNotFoundError(
+                    "Prepared GPW cache missing and auto_download=false. "
+                    f"Expected prepared cache at {prepared_path}"
+                )
+            raw_path = _download_raw_dataset(cfg)
 
-    geotiff_path = _ensure_geotiff(raw_path)
-    _prepare_from_geotiff(geotiff_path, prepared_path, cfg)
-    return prepared_path
+        geotiff_path = _ensure_geotiff(raw_path)
+        _prepare_from_geotiff(geotiff_path, prepared_path, cfg)
+        return prepared_path
+    except Exception as exc:  # noqa: BLE001
+        try:
+            census_fallback = ensure_prepared_census_blockgroup_dataset(cfg)
+            print(
+                "[bench] warn: unable to prepare requested GPW population dataset "
+                f"({exc}); falling back to Census {_format_cell_deg(min(float(cfg.prepared_cell_deg), 0.02))} "
+                f"block-group grid {census_fallback}"
+            )
+            return census_fallback
+        except Exception as census_exc:  # noqa: BLE001
+            fallback = _bundled_proxy_dataset_path()
+            print(
+                "[bench] warn: unable to prepare requested GPW population dataset "
+                f"({exc}); Census block-group fallback failed ({census_exc}); "
+                f"falling back to bundled metro proxy CSV {fallback}"
+            )
+            return fallback
+
+
+def _normalize_population_source(value: object) -> str:
+    return str(value or "auto").strip().lower()
 
 
 def _format_cell_deg(cell_deg: float) -> str:
     return str(float(cell_deg)).replace(".", "p") + "deg"
+
+
+def _bundled_proxy_dataset_path() -> Path:
+    resource = resources.files("mach_cutoff").joinpath("data").joinpath("us_metro_population_sample.csv")
+    return Path(str(resource)).resolve()
+
+
+def _prepared_dataset_matches_request(path: Path, cfg: GPWConfig) -> bool:
+    metadata = _read_prepared_metadata(path)
+    if not metadata:
+        return True
+    product = str(metadata.get("product", "")).strip().lower()
+    if product.startswith("metro_proxy"):
+        return False
+    year = metadata.get("year")
+    if year is not None and int(year) != int(cfg.year):
+        return False
+    cell_deg = metadata.get("prepared_cell_deg")
+    if cell_deg is not None and abs(float(cell_deg) - float(cfg.prepared_cell_deg)) > 1e-6:
+        return False
+    return True
+
+
+def _read_prepared_metadata(path: Path) -> dict | None:
+    try:
+        with np.load(path) as raw:
+            if "source_metadata" not in raw:
+                return None
+            payload = raw["source_metadata"]
+            if payload.size == 0:
+                return None
+            return json.loads(str(payload.reshape(-1)[0]))
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _find_raw_dataset(raw_dir: Path, year: int) -> Path | None:

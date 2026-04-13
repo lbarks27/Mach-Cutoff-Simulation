@@ -10,6 +10,7 @@ from typing import Any
 
 @dataclass(slots=True)
 class GPWConfig:
+    source: str = "auto"
     product: str = "gpwv4_popcount_r11"
     year: int = 2020
     auto_download: bool = True
@@ -73,6 +74,12 @@ class BenchmarkConfig:
     anchor_scenario_ids: list[str] = field(default_factory=list)
     sensitivity_profiles: dict[str, SensitivityProfileConfig] = field(default_factory=dict)
     research_objectives: ResearchObjectiveConfig = field(default_factory=ResearchObjectiveConfig)
+    enable_visual_outputs: bool = False
+    save_google_earth_kml: bool = False
+    save_npz_for_all_runs: bool = False
+    write_html: bool = True
+    make_animation: bool = False
+    include_atmosphere: bool = True
     jobs: int = 1
     resume: bool = True
     retain_anchor_npz: bool = True
@@ -137,6 +144,12 @@ class BenchmarkConfig:
             anchor_scenario_ids=[str(v) for v in raw.get("anchor_scenario_ids", [])],
             sensitivity_profiles=sensitivity_profiles,
             research_objectives=research_objectives,
+            enable_visual_outputs=bool(raw.get("enable_visual_outputs", False)),
+            save_google_earth_kml=bool(raw.get("save_google_earth_kml", False)),
+            save_npz_for_all_runs=bool(raw.get("save_npz_for_all_runs", False)),
+            write_html=bool(raw.get("write_html", True)),
+            make_animation=bool(raw.get("make_animation", False)),
+            include_atmosphere=bool(raw.get("include_atmosphere", True)),
             jobs=max(1, int(raw.get("jobs", 1))),
             resume=bool(raw.get("resume", True)),
             retain_anchor_npz=bool(raw.get("retain_anchor_npz", True)),

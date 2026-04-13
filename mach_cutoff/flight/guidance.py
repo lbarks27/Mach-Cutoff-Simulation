@@ -4,14 +4,18 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from typing import TYPE_CHECKING
 
 import numpy as np
 
-from ..config import AircraftConfig
+from ..config import AircraftConfig, PopulationConfig
 from ..core.geodesy import ecef_to_geodetic, ecef_to_enu, enu_basis, geodetic_to_ecef
 from ..guidance_config import GuidanceConfig
 from .aircraft import AircraftState
 from .waypoints import FlightPath
+
+if TYPE_CHECKING:
+    from ..simulation.population import PopulationCorridorSampler
 
 _G_MPS2 = 9.80665
 _EPS = 1e-9
@@ -69,10 +73,17 @@ class BoomOptimizationDecision:
 class WaypointGuidanceController:
     """Simple 3D lookahead guidance with boom/mach-cutoff feedback hooks."""
 
-    def __init__(self, flight_path: FlightPath, aircraft_config: AircraftConfig, config: GuidanceConfig):
+    def __init__(
+        self,
+        flight_path: FlightPath,
+        aircraft_config: AircraftConfig,
+        config: GuidanceConfig,
+        population_corridor_sampler: PopulationCorridorSampler | None = None,
+    ):
         self.flight_path = flight_path
         self.aircraft_config = aircraft_config
         self.config = config
+        self.population_corridor_sampler = population_corridor_sampler
         self._mode = "takeoff_climb" if config.mode_switch.enable_takeoff_climb else "enroute"
         self._altitude_bias_m = 0.0
         self._last_effective_mach: float | None = None
@@ -83,6 +94,7 @@ class WaypointGuidanceController:
         self._smoothed_source_cutoff: float = 0.0
         self._optimizer_altitude_adjustment_m: float = 0.0
         self._optimizer_mach_adjustment: float = 0.0
+        self._smoothed_exposure_corridor_bias_mach: float = 0.0
 
     def apply_feedback(self, feedback: GuidanceFeedback):
         opt_cfg = self.config.boom_avoidance.optimizer
@@ -139,6 +151,7 @@ class WaypointGuidanceController:
         state: AircraftState,
         signed_xt_m: float,
         distance_remaining_m: float,
+        exposure_ground_risk_scale: float,
     ) -> BoomOptimizationDecision:
         opt_cfg = self.config.boom_avoidance.optimizer
         mode_cfg = self.config.mode_switch
@@ -194,7 +207,7 @@ class WaypointGuidanceController:
         terminal_altitude_bias = terminal_factor * max(0.0, candidate_altitude_m - base_route_altitude_m) / 1000.0
 
         cost = (
-            float(opt_cfg.weight_ground_risk) * mean_ground_risk
+            float(opt_cfg.weight_ground_risk) * float(exposure_ground_risk_scale) * mean_ground_risk
             + float(opt_cfg.weight_cutoff_risk) * mean_cutoff_risk
             + float(opt_cfg.weight_tracking) * track_norm
             + float(opt_cfg.weight_altitude_deviation) * altitude_dev_km
@@ -221,6 +234,7 @@ class WaypointGuidanceController:
         base_mach: float,
         signed_xt_m: float,
         distance_remaining_m: float,
+        exposure_ground_risk_scale: float,
     ) -> BoomOptimizationDecision:
         boom_cfg = self.config.boom_avoidance
         opt_cfg = boom_cfg.optimizer
@@ -280,6 +294,7 @@ class WaypointGuidanceController:
                     state=state,
                     signed_xt_m=float(signed_xt_m),
                     distance_remaining_m=float(distance_remaining_m),
+                    exposure_ground_risk_scale=float(exposure_ground_risk_scale),
                 )
                 if best is None or decision.cost < best.cost:
                     best = decision
@@ -396,11 +411,120 @@ class WaypointGuidanceController:
 
         self._mode = "enroute"
 
-    def _desired_mach(self) -> float:
+    def _sample_exposure_corridor_profile(self, along_track_m: float, distance_remaining_m: float) -> dict[str, float] | None:
+        cfg = self.config.exposure_corridor
+        sampler = self.population_corridor_sampler
+        if not cfg.enabled or sampler is None or distance_remaining_m <= 1.0:
+            return None
+
+        lookahead_m = _clip(
+            max(float(cfg.min_lookahead_m), min(distance_remaining_m, float(cfg.max_lookahead_m))),
+            1.0,
+            max(distance_remaining_m, 1.0),
+        )
+        spacing_m = max(float(cfg.sample_spacing_m), 1_000.0)
+        offsets = np.arange(spacing_m, lookahead_m + 1e-6, spacing_m, dtype=np.float64)
+        if offsets.size == 0:
+            offsets = np.asarray([lookahead_m], dtype=np.float64)
+
+        dense_brake_horizon_m = max(float(cfg.dense_brake_lookahead_m), spacing_m)
+        densities: list[float] = []
+        brake_densities: list[float] = []
+        for offset_m in offsets:
+            target_s = min(float(self.flight_path.total_length_m), float(along_track_m + offset_m))
+            future_state = self.flight_path.state_at_distance(target_s)
+            density = sampler.local_density_people_per_km2(
+                float(future_state["lat_deg"]),
+                float(future_state["lon_deg"]),
+                half_width_km=float(cfg.corridor_half_width_km),
+            )
+            densities.append(density)
+            if offset_m <= dense_brake_horizon_m + 1e-6:
+                brake_densities.append(density)
+        if not densities:
+            return {
+                "near_density_people_per_km2": 0.0,
+                "mean_density_people_per_km2": 0.0,
+                "brake_density_people_per_km2": 0.0,
+            }
+
+        density_arr = np.asarray(densities, dtype=np.float64)
+        near_count = max(1, int(np.ceil(0.35 * density_arr.size)))
+        near_density = float(np.mean(density_arr[:near_count]))
+        mean_density = float(np.mean(density_arr))
+        brake_density = float(np.quantile(np.asarray(brake_densities if brake_densities else densities, dtype=np.float64), 0.8))
+        return {
+            "near_density_people_per_km2": near_density,
+            "mean_density_people_per_km2": mean_density,
+            "brake_density_people_per_km2": brake_density,
+        }
+
+    def _exposure_corridor_ground_risk_scale(self, near_density_people_per_km2: float | None) -> float:
+        cfg = self.config.exposure_corridor
+        if (not cfg.enabled) or near_density_people_per_km2 is None:
+            return 1.0
+
+        sparse_density = max(float(cfg.sparse_density_people_per_km2), 0.0)
+        dense_density = max(float(cfg.dense_density_people_per_km2), sparse_density + 1e-6)
+        sparse_scale = max(float(cfg.sparse_ground_risk_scale), 0.0)
+        dense_scale = max(float(cfg.dense_ground_risk_scale), 0.0)
+
+        if near_density_people_per_km2 <= sparse_density:
+            return float(sparse_scale)
+        if near_density_people_per_km2 >= dense_density:
+            return float(dense_scale)
+
+        frac = (near_density_people_per_km2 - sparse_density) / max(dense_density - sparse_density, 1e-6)
+        return float((1.0 - frac) * sparse_scale + frac * dense_scale)
+
+    def _exposure_corridor_mach_bias(self, along_track_m: float, distance_remaining_m: float) -> float:
+        cfg = self.config.exposure_corridor
+        alpha = _clip(float(cfg.bias_smoothing), 0.0, 1.0)
+        profile = self._sample_exposure_corridor_profile(along_track_m, distance_remaining_m)
+        if profile is None:
+            self._smoothed_exposure_corridor_bias_mach *= 1.0 - alpha
+            return float(self._smoothed_exposure_corridor_bias_mach)
+
+        sparse_density = max(float(cfg.sparse_density_people_per_km2), 0.0)
+        dense_density = max(float(cfg.dense_density_people_per_km2), sparse_density + 1e-6)
+        near_density = float(profile["near_density_people_per_km2"])
+        brake_density = float(profile["brake_density_people_per_km2"])
+
+        if near_density <= sparse_density:
+            sparse_term = max(float(cfg.sparse_mach_bias), 0.0)
+        elif near_density >= dense_density:
+            sparse_term = 0.0
+        else:
+            frac = (near_density - sparse_density) / max(dense_density - sparse_density, 1e-6)
+            sparse_term = (1.0 - frac) * max(float(cfg.sparse_mach_bias), 0.0)
+
+        if brake_density <= sparse_density:
+            dense_term = 0.0
+        elif brake_density >= dense_density:
+            dense_term = max(float(cfg.dense_mach_bias), 0.0)
+        else:
+            frac = (brake_density - sparse_density) / max(dense_density - sparse_density, 1e-6)
+            dense_term = frac * max(float(cfg.dense_mach_bias), 0.0)
+
+        target_bias = sparse_term - dense_term
+
+        if self._mode == "terminal":
+            target_bias *= float(cfg.terminal_scale)
+        elif self._mode == "takeoff_climb":
+            target_bias *= float(cfg.takeoff_scale)
+
+        self._smoothed_exposure_corridor_bias_mach = (
+            (1.0 - alpha) * self._smoothed_exposure_corridor_bias_mach + alpha * target_bias
+        )
+        return float(self._smoothed_exposure_corridor_bias_mach)
+
+    def _desired_mach(self, along_track_m: float, distance_remaining_m: float) -> float:
         speed_cfg = self.config.speed
         mach = float(speed_cfg.target_mach)
         if self._last_effective_mach is not None:
             mach += float(speed_cfg.effective_mach_gain) * (float(speed_cfg.effective_mach_target) - self._last_effective_mach)
+
+        mach += self._exposure_corridor_mach_bias(along_track_m, distance_remaining_m)
 
         boom_cfg = self.config.boom_avoidance
         if (not boom_cfg.optimizer.enabled) and self._last_ground_hit_fraction is not None:
@@ -518,13 +642,18 @@ class WaypointGuidanceController:
             float(self.config.constraints.min_altitude_m),
             float(self.config.constraints.max_altitude_m),
         )
-        base_desired_mach = self._desired_mach()
+        base_desired_mach = self._desired_mach(along_track_m, distance_remaining_m)
+        corridor_profile = self._sample_exposure_corridor_profile(along_track_m, distance_remaining_m)
+        exposure_ground_risk_scale = self._exposure_corridor_ground_risk_scale(
+            None if corridor_profile is None else corridor_profile["near_density_people_per_km2"]
+        )
         optimization = self._select_boom_aware_targets(
             state=state,
             base_route_altitude_m=base_route_alt_target_m,
             base_mach=base_desired_mach,
             signed_xt_m=signed_xt_m,
             distance_remaining_m=distance_remaining_m,
+            exposure_ground_risk_scale=exposure_ground_risk_scale,
         )
 
         route_alt_target_m = float(optimization.altitude_target_m)
@@ -588,7 +717,13 @@ class WaypointGuidanceController:
 class GuidedPointMassAircraft:
     """Stateful point-mass aircraft model driven by guidance commands."""
 
-    def __init__(self, flight_path: FlightPath, aircraft_config: AircraftConfig, guidance_config: GuidanceConfig):
+    def __init__(
+        self,
+        flight_path: FlightPath,
+        aircraft_config: AircraftConfig,
+        guidance_config: GuidanceConfig,
+        population_config: PopulationConfig | None = None,
+    ):
         if aircraft_config.reference_sound_speed_mps <= 0.0:
             raise ValueError("reference_sound_speed_mps must be positive")
         if guidance_config.integration_dt_s <= 0.0:
@@ -597,7 +732,17 @@ class GuidedPointMassAircraft:
         self.flight_path = flight_path
         self.aircraft_config = aircraft_config
         self.guidance_config = guidance_config
-        self.controller = WaypointGuidanceController(flight_path, aircraft_config, guidance_config)
+        corridor_sampler = None
+        if population_config is not None and guidance_config.exposure_corridor.enabled:
+            from ..simulation.population import build_population_corridor_sampler
+
+            corridor_sampler = build_population_corridor_sampler(population_config.dataset_path)
+        self.controller = WaypointGuidanceController(
+            flight_path,
+            aircraft_config,
+            guidance_config,
+            population_corridor_sampler=corridor_sampler,
+        )
 
         first_state = self.flight_path.state_at(self.flight_path.start_time)
         start_time = self.flight_path.start_time

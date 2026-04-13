@@ -36,6 +36,56 @@ class _PopulationGrid:
     population_grid: np.ndarray
 
 
+@dataclass(slots=True)
+class PopulationCorridorSampler:
+    source_name: str
+    lat_edges_deg: np.ndarray | None
+    lon_edges_deg: np.ndarray | None
+    density_grid_people_per_km2: np.ndarray | None
+    point_lat_deg: np.ndarray | None
+    point_lon_deg: np.ndarray | None
+    point_population: np.ndarray | None
+
+    def local_density_people_per_km2(
+        self,
+        lat_deg: float,
+        lon_deg: float,
+        *,
+        half_width_km: float,
+    ) -> float:
+        half_width_km = max(float(half_width_km), 1e-3)
+        lon_deg = float(normalize_lon_deg(np.asarray([lon_deg], dtype=np.float64)).reshape(-1)[0])
+        lat_deg = float(lat_deg)
+
+        if self.density_grid_people_per_km2 is not None and self.lat_edges_deg is not None and self.lon_edges_deg is not None:
+            lat_edges = np.asarray(self.lat_edges_deg, dtype=np.float64)
+            lon_edges = np.asarray(self.lon_edges_deg, dtype=np.float64)
+            density = np.asarray(self.density_grid_people_per_km2, dtype=np.float64)
+            lat_radius_deg = half_width_km / _KM_PER_DEG
+            lon_radius_deg = half_width_km / max(1e-3, _KM_PER_DEG * np.cos(np.deg2rad(lat_deg)))
+            lat_mask = (lat_edges[:-1] < lat_deg + lat_radius_deg) & (lat_edges[1:] > lat_deg - lat_radius_deg)
+            lon_mask = (lon_edges[:-1] < lon_deg + lon_radius_deg) & (lon_edges[1:] > lon_deg - lon_radius_deg)
+            if np.any(lat_mask) and np.any(lon_mask):
+                window = density[np.ix_(lat_mask, lon_mask)]
+                if window.size:
+                    return float(np.mean(window))
+            return 0.0
+
+        if self.point_lat_deg is not None and self.point_lon_deg is not None and self.point_population is not None:
+            lat = np.asarray(self.point_lat_deg, dtype=np.float64)
+            lon = np.asarray(self.point_lon_deg, dtype=np.float64)
+            pop = np.asarray(self.point_population, dtype=np.float64)
+            lat_radius_deg = half_width_km / _KM_PER_DEG
+            lon_radius_deg = half_width_km / max(1e-3, _KM_PER_DEG * np.cos(np.deg2rad(lat_deg)))
+            mask = (np.abs(lat - lat_deg) <= lat_radius_deg) & (np.abs(lon - lon_deg) <= lon_radius_deg)
+            if not np.any(mask):
+                return 0.0
+            area_km2 = max((2.0 * half_width_km) ** 2, 1.0)
+            return float(np.sum(pop[mask]) / area_km2)
+
+        return 0.0
+
+
 def _read_population_csv(stream: TextIO, source_name: str, source_path: str) -> _PopulationPoints:
     reader = csv.DictReader(stream)
     if not reader.fieldnames:
@@ -171,6 +221,43 @@ def _load_population_source(dataset_path: str | None) -> _PopulationPoints | _Po
     raise ValueError("Population dataset must be .csv, .txt, or .npz")
 
 
+def build_population_corridor_sampler(dataset_path: str | None) -> PopulationCorridorSampler | None:
+    try:
+        source = _load_population_source(dataset_path)
+    except Exception:
+        return None
+
+    if isinstance(source, _PopulationGrid):
+        lat_edges = np.asarray(source.lat_edges_deg, dtype=np.float64)
+        lon_edges = np.asarray(source.lon_edges_deg, dtype=np.float64)
+        lat_centers = 0.5 * (lat_edges[:-1] + lat_edges[1:])
+        dlat_km = np.abs(np.diff(lat_edges)) * _KM_PER_DEG
+        dlon_km = np.abs(np.diff(lon_edges))[None, :] * (
+            _KM_PER_DEG * np.cos(np.deg2rad(lat_centers))
+        )[:, None]
+        cell_area_km2 = np.maximum(dlat_km[:, None] * dlon_km, 1e-6)
+        density = np.asarray(source.population_grid, dtype=np.float64) / cell_area_km2
+        return PopulationCorridorSampler(
+            source_name=source.source_name,
+            lat_edges_deg=lat_edges,
+            lon_edges_deg=lon_edges,
+            density_grid_people_per_km2=density,
+            point_lat_deg=None,
+            point_lon_deg=None,
+            point_population=None,
+        )
+
+    return PopulationCorridorSampler(
+        source_name=source.source_name,
+        lat_edges_deg=None,
+        lon_edges_deg=None,
+        density_grid_people_per_km2=None,
+        point_lat_deg=np.asarray(source.lat_deg, dtype=np.float64),
+        point_lon_deg=np.asarray(source.lon_deg, dtype=np.float64),
+        point_population=np.asarray(source.population, dtype=np.float64),
+    )
+
+
 def _analysis_domain_bounds(emissions: list[EmissionResult], pad_deg: float) -> tuple[float, float, float, float]:
     lats: list[float] = []
     lons: list[float] = []
@@ -245,12 +332,52 @@ def _aggregate_population_to_grid(
     if ny == 0 or nx == 0 or points.population.size == 0:
         return grid
 
-    lat_idx = np.searchsorted(lat_edges, points.lat_deg, side="right") - 1
-    lon_idx = np.searchsorted(lon_edges, points.lon_deg, side="right") - 1
-    valid = (lat_idx >= 0) & (lat_idx < ny) & (lon_idx >= 0) & (lon_idx < nx)
-    if np.any(valid):
-        np.add.at(grid, (lat_idx[valid], lon_idx[valid]), points.population[valid])
+    lat_centers = 0.5 * (lat_edges[:-1] + lat_edges[1:])
+    lon_centers = 0.5 * (lon_edges[:-1] + lon_edges[1:])
+
+    for lat_deg, lon_deg, population in zip(points.lat_deg, points.lon_deg, points.population, strict=False):
+        sigma_km = _point_population_spread_sigma_km(float(population))
+        support_radius_km = max(12.0, 2.8 * sigma_km)
+        lat_radius_deg = support_radius_km / _KM_PER_DEG
+        lon_radius_deg = support_radius_km / max(1e-3, _KM_PER_DEG * np.cos(np.deg2rad(lat_deg)))
+
+        lat_lo = max(0, int(np.searchsorted(lat_centers, lat_deg - lat_radius_deg, side="left")))
+        lat_hi = min(ny, int(np.searchsorted(lat_centers, lat_deg + lat_radius_deg, side="right")))
+        lon_lo = max(0, int(np.searchsorted(lon_centers, lon_deg - lon_radius_deg, side="left")))
+        lon_hi = min(nx, int(np.searchsorted(lon_centers, lon_deg + lon_radius_deg, side="right")))
+
+        if lat_lo >= lat_hi or lon_lo >= lon_hi:
+            lat_idx = int(np.clip(np.searchsorted(lat_edges, lat_deg, side="right") - 1, 0, ny - 1))
+            lon_idx = int(np.clip(np.searchsorted(lon_edges, lon_deg, side="right") - 1, 0, nx - 1))
+            grid[lat_idx, lon_idx] += float(population)
+            continue
+
+        patch_lat = lat_centers[lat_lo:lat_hi]
+        patch_lon = lon_centers[lon_lo:lon_hi]
+        patch_lon_grid, patch_lat_grid = np.meshgrid(patch_lon, patch_lat)
+        dist_km = _haversine_km(
+            float(lat_deg),
+            float(lon_deg),
+            patch_lat_grid.reshape(-1),
+            patch_lon_grid.reshape(-1),
+        ).reshape(lat_hi - lat_lo, lon_hi - lon_lo)
+        weights = np.exp(-0.5 * np.square(dist_km / max(sigma_km, 1e-3)))
+        weights = np.where(dist_km <= support_radius_km, weights, 0.0)
+        weight_sum = float(np.sum(weights))
+        if weight_sum <= 0.0:
+            lat_idx = int(np.clip(np.searchsorted(lat_edges, lat_deg, side="right") - 1, 0, ny - 1))
+            lon_idx = int(np.clip(np.searchsorted(lon_edges, lon_deg, side="right") - 1, 0, nx - 1))
+            grid[lat_idx, lon_idx] += float(population)
+            continue
+
+        grid[lat_lo:lat_hi, lon_lo:lon_hi] += float(population) * (weights / weight_sum)
     return grid
+
+
+def _point_population_spread_sigma_km(population: float) -> float:
+    pop = max(float(population), 1.0)
+    sigma_km = 4.0 + 2.6 * float(np.log10(pop))
+    return float(np.clip(sigma_km, 5.0, 24.0))
 
 
 def _clip_population_grid_to_domain(
@@ -385,9 +512,12 @@ def _emission_coverage_mask(
         return np.zeros(cell_lat_flat.size, dtype=bool)
 
     width_km = float(max(cfg.trace_half_width_km, 0.5))
+    mask = np.zeros(cell_lat_flat.size, dtype=bool)
+    for lat_i, lon_i in zip(hit_lat, hit_lon, strict=False):
+        dist = _haversine_km(float(lat_i), float(lon_i), cell_lat_flat, cell_lon_flat)
+        mask |= dist <= width_km
     if hit_lat.size == 1:
-        dist = _haversine_km(float(hit_lat[0]), float(hit_lon[0]), cell_lat_flat, cell_lon_flat)
-        return dist <= width_km
+        return mask
 
     sort_idx = np.argsort(hit_ray_id, kind="mergesort")
     hit_lat = hit_lat[sort_idx]
@@ -397,27 +527,12 @@ def _emission_coverage_mask(
     hit_xy = _project_equirect_km(hit_lat, hit_lon, lat0, lon0)
     cell_xy = _project_equirect_km(cell_lat_flat, cell_lon_flat, lat0, lon0)
 
-    if hit_xy.shape[0] >= 3:
-        hull = _convex_hull_xy(hit_xy)
-        poly_mask = _points_in_polygon_xy(cell_xy, hull)
-        if np.any(poly_mask):
-            return poly_mask
-
     max_seg_km = float(max(cfg.max_segment_length_km, 1.0))
-    mask = np.zeros(cell_xy.shape[0], dtype=bool)
     for i in range(hit_xy.shape[0] - 1):
         if float(np.linalg.norm(hit_xy[i + 1] - hit_xy[i])) > max_seg_km:
             continue
         dist = _point_to_segment_distance_km(cell_xy, hit_xy[i], hit_xy[i + 1])
         mask |= dist <= width_km
-    if hit_xy.shape[0] > 2 and float(np.linalg.norm(hit_xy[0] - hit_xy[-1])) <= max_seg_km:
-        dist = _point_to_segment_distance_km(cell_xy, hit_xy[-1], hit_xy[0])
-        mask |= dist <= width_km
-
-    if not np.any(mask):
-        for lat_i, lon_i in zip(hit_lat, hit_lon, strict=False):
-            dist = _haversine_km(float(lat_i), float(lon_i), cell_lat_flat, cell_lon_flat)
-            mask |= dist <= width_km
     return mask
 
 

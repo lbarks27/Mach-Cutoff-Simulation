@@ -1,1 +1,0 @@
-{"best_final_candidate_id": "c1", "full_fidelity_leaderboard": [{"candidate_id": "c1", "metrics": {"elapsed_time_s": 140.0, "time_proxy_s": 150.0, "route_distance_km": 500.0, "fuel_proxy": 200.0, "populated_ground_hit_count": 1, "distance_to_destination_m": 0.0, "abort_samples": 0}}]}

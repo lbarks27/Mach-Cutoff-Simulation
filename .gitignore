@@ -2,7 +2,15 @@ __pycache__/
 *.pyc
 .DS_Store
 .cache/
+
+# Generated outputs and experiment artifacts
 outputs/
 outputs_*/
+tmp/
+results/
+development_tests/
+examples/
+experiments/
+
 *.egg-info/
 .venv/

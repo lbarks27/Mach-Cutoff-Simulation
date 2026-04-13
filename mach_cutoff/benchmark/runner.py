@@ -19,6 +19,11 @@ from ..simulation.route_optimizer import (
     RouteOptimizationSettings,
     optimize_route_with_reruns,
 )
+from ..visualization import (
+    render_matplotlib_bundle,
+    render_plotly_bundle,
+    render_pyvista_bundle,
+)
 from .analysis import write_aggregate_artifacts
 from .config import BenchmarkConfig, RouteClassConfig, SensitivityProfileConfig
 from .gpw import ensure_prepared_population_dataset
@@ -83,8 +88,10 @@ def _settings_from_route_cfg(ro_cfg: RouteOptimizationConfig) -> RouteOptimizati
     return RouteOptimizationSettings(
         max_wall_time_s=float(ro_cfg.max_wall_time_s),
         reserve_time_for_full_fidelity_s=float(ro_cfg.reserve_time_for_full_fidelity_s),
+        reserve_time_for_mid_fidelity_s=float(ro_cfg.reserve_time_for_mid_fidelity_s),
         seed=int(ro_cfg.seed),
         batch_size=int(ro_cfg.batch_size),
+        semifinalists=int(ro_cfg.semifinalists),
         finalists=int(ro_cfg.finalists),
         elite_pool_size=int(ro_cfg.elite_pool_size),
         max_duplicate_attempts=int(ro_cfg.max_duplicate_attempts),
@@ -97,6 +104,8 @@ def _settings_from_route_cfg(ro_cfg: RouteOptimizationConfig) -> RouteOptimizati
         weight_total_ground_hits=float(ro_cfg.weight_total_ground_hits),
         weight_overflight_population=float(ro_cfg.weight_overflight_population),
         weight_overflight_area=float(ro_cfg.weight_overflight_area),
+        weight_route_stretch=float(ro_cfg.weight_route_stretch),
+        weight_route_heading_change=float(ro_cfg.weight_route_heading_change),
         boom_exposure_limit_people=(
             None if ro_cfg.boom_exposure_limit_people is None else float(ro_cfg.boom_exposure_limit_people)
         ),
@@ -118,10 +127,16 @@ def _settings_from_route_cfg(ro_cfg: RouteOptimizationConfig) -> RouteOptimizati
         low_fidelity_step_scale=float(ro_cfg.low_fidelity_step_scale),
         low_fidelity_max_steps_scale=float(ro_cfg.low_fidelity_max_steps_scale),
         low_fidelity_max_emissions=int(ro_cfg.low_fidelity_max_emissions),
+        mid_fidelity_emission_interval_scale=float(ro_cfg.mid_fidelity_emission_interval_scale),
+        mid_fidelity_rays_scale=float(ro_cfg.mid_fidelity_rays_scale),
+        mid_fidelity_grid_scale=float(ro_cfg.mid_fidelity_grid_scale),
+        mid_fidelity_step_scale=float(ro_cfg.mid_fidelity_step_scale),
+        mid_fidelity_max_steps_scale=float(ro_cfg.mid_fidelity_max_steps_scale),
+        mid_fidelity_max_emissions=int(ro_cfg.mid_fidelity_max_emissions),
     )
 
 
-def _configure_defaults_for_benchmark(cfg: ExperimentConfig):
+def _configure_defaults_for_benchmark(cfg: ExperimentConfig, benchmark_cfg: BenchmarkConfig):
     cfg.population.enabled = True
     cfg.population.heatmap_cell_deg = 0.05
     cfg.population.hit_radius_km = 90.0
@@ -129,20 +144,30 @@ def _configure_defaults_for_benchmark(cfg: ExperimentConfig):
     cfg.population.overflight_half_width_km = 20.0
 
     cfg.route_optimization.enabled = True
-    cfg.route_optimization.max_wall_time_s = 120.0
-    cfg.route_optimization.reserve_time_for_full_fidelity_s = 30.0
+    cfg.route_optimization.max_wall_time_s = 240.0
+    cfg.route_optimization.reserve_time_for_mid_fidelity_s = 70.0
+    cfg.route_optimization.reserve_time_for_full_fidelity_s = 70.0
     cfg.route_optimization.batch_size = 4
-    cfg.route_optimization.finalists = 2
+    cfg.route_optimization.semifinalists = 6
+    cfg.route_optimization.finalists = 4
     cfg.route_optimization.elite_pool_size = 4
     cfg.route_optimization.min_control_waypoints = 11
-    cfg.route_optimization.artifact_mode = "benchmark"
+    cfg.route_optimization.artifact_mode = "full" if benchmark_cfg.save_google_earth_kml else "benchmark"
 
-    cfg.visualization.enable_matplotlib = False
-    cfg.visualization.enable_plotly = False
-    cfg.visualization.enable_pyvista = False
-    cfg.visualization.make_animation = False
-    cfg.visualization.write_html = False
-    cfg.visualization.include_atmosphere = False
+    if benchmark_cfg.enable_visual_outputs:
+        cfg.visualization.enable_matplotlib = True
+        cfg.visualization.enable_plotly = True
+        cfg.visualization.enable_pyvista = True
+        cfg.visualization.make_animation = bool(benchmark_cfg.make_animation)
+        cfg.visualization.write_html = bool(benchmark_cfg.write_html)
+        cfg.visualization.include_atmosphere = bool(benchmark_cfg.include_atmosphere)
+    else:
+        cfg.visualization.enable_matplotlib = False
+        cfg.visualization.enable_plotly = False
+        cfg.visualization.enable_pyvista = False
+        cfg.visualization.make_animation = False
+        cfg.visualization.write_html = False
+        cfg.visualization.include_atmosphere = False
 
 
 def _apply_route_class(
@@ -179,6 +204,51 @@ def _apply_sensitivity(
     cfg2 = ExperimentConfig.from_dict(cfg_dict)
     guidance2 = GuidanceConfig.from_dict(guidance_dict)
     return cfg2, guidance2
+
+
+def _render_visual_outputs(
+    *,
+    result,
+    cfg: ExperimentConfig,
+    run_dir: Path,
+):
+    if cfg.visualization.enable_matplotlib:
+        try:
+            render_matplotlib_bundle(
+                result,
+                run_dir,
+                make_animation=bool(cfg.visualization.make_animation),
+                include_atmosphere=bool(cfg.visualization.include_atmosphere),
+                show_window=False,
+                map_style=cfg.visualization.map_style,
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"[bench] warn: matplotlib render failed for {run_dir.name}: {exc}")
+
+    if cfg.visualization.enable_plotly:
+        try:
+            render_plotly_bundle(
+                result,
+                run_dir,
+                write_html=bool(cfg.visualization.write_html),
+                include_atmosphere=bool(cfg.visualization.include_atmosphere),
+                open_browser=False,
+                map_style=cfg.visualization.map_style,
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"[bench] warn: plotly render failed for {run_dir.name}: {exc}")
+
+    if cfg.visualization.enable_pyvista:
+        try:
+            render_pyvista_bundle(
+                result,
+                run_dir,
+                make_animation=bool(cfg.visualization.make_animation),
+                show_window=False,
+                map_style=cfg.visualization.map_style,
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"[bench] warn: pyvista render failed for {run_dir.name}: {exc}")
 
 
 def run_benchmark(
@@ -219,6 +289,7 @@ def run_benchmark(
         for route_class_id, route_class in route_classes.items():
             run_records.append(
                 _run_single(
+                    benchmark_cfg=benchmark_cfg,
                     output_root=output_root,
                     scenario=scenario,
                     route_class_id=route_class_id,
@@ -247,6 +318,7 @@ def run_benchmark(
                 for profile_id, profile in benchmark_cfg.sensitivity_profiles.items():
                     run_records.append(
                         _run_single(
+                            benchmark_cfg=benchmark_cfg,
                             output_root=output_root,
                             scenario=scenario,
                             route_class_id=route_class_id,
@@ -290,6 +362,7 @@ def run_benchmark(
 
 def _run_single(
     *,
+    benchmark_cfg: BenchmarkConfig,
     output_root: Path,
     scenario: BenchmarkScenario,
     route_class_id: str,
@@ -332,7 +405,7 @@ def _run_single(
 
     cfg = _clone_experiment_config(base_cfg)
     guidance = _clone_guidance_config(base_guidance)
-    _configure_defaults_for_benchmark(cfg)
+    _configure_defaults_for_benchmark(cfg, benchmark_cfg)
     cfg.population.dataset_path = str(prepared_population_path)
 
     cfg, guidance = _apply_route_class(cfg, guidance, route_class)
@@ -340,14 +413,6 @@ def _run_single(
         cfg, guidance = _apply_sensitivity(cfg, guidance, sensitivity_profile)
 
     cfg.visualization.output_dir = str(run_dir)
-
-    # Enforce route-class behavior for guidance feedback modes.
-    if route_class_id in {"fastest", "population_avoidant"}:
-        guidance.boom_avoidance.enable_ground_hit_feedback = False
-        guidance.boom_avoidance.optimizer.enabled = False
-    elif route_class_id == "cutoff_optimized":
-        guidance.boom_avoidance.enable_ground_hit_feedback = True
-        guidance.boom_avoidance.optimizer.enabled = True
 
     path = _build_path_for_scenario(scenario, cfg)
     run_config_path = run_dir / "run_config_resolved.json"
@@ -393,8 +458,15 @@ def _run_single(
             result = simulator.run(path)
 
         result.save_json_summary(summary_path)
-        if retain_anchor_npz and scenario.scenario_id in anchor_scenario_ids:
+        should_save_npz = bool(benchmark_cfg.save_npz_for_all_runs) or (
+            retain_anchor_npz and scenario.scenario_id in anchor_scenario_ids
+        )
+        if should_save_npz:
             result.save_npz(run_dir / "simulation_hits.npz")
+        if benchmark_cfg.save_google_earth_kml:
+            result.save_kml(run_dir / "google_earth_overlay.kml")
+        if benchmark_cfg.enable_visual_outputs:
+            _render_visual_outputs(result=result, cfg=cfg, run_dir=run_dir)
         success = True
     except Exception as exc:  # noqa: BLE001
         error_message = str(exc)
