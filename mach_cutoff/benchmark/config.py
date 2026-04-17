@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -156,12 +157,72 @@ class BenchmarkConfig:
         )
 
 
-def load_benchmark_config(path: str | Path) -> BenchmarkConfig:
+def _deep_merge_dicts(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    merged = copy.deepcopy(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _deep_merge_dicts(merged[key], value)
+        else:
+            merged[key] = copy.deepcopy(value)
+    return merged
+
+
+def _resolve_manifest_path(value: object, root: Path) -> object:
+    if not isinstance(value, str) or not value:
+        return value
+    path = Path(value).expanduser()
+    if path.is_absolute():
+        return str(path.resolve())
+    return str((root / path).resolve())
+
+
+def _resolve_manifest_paths(raw: dict[str, Any], root: Path) -> dict[str, Any]:
+    resolved = copy.deepcopy(raw)
+    for key in ("output_root", "base_config_path", "base_guidance_config_path", "population_cache_dir"):
+        if key in resolved:
+            resolved[key] = _resolve_manifest_path(resolved[key], root)
+
+    gpw = resolved.get("gpw")
+    if isinstance(gpw, dict):
+        for key in ("raw_cache_dir", "prepared_cache_dir"):
+            if key in gpw:
+                gpw[key] = _resolve_manifest_path(gpw[key], root)
+    return resolved
+
+
+def _load_benchmark_config_dict(path: str | Path, _seen: set[Path] | None = None) -> dict[str, Any]:
     cfg_path = Path(path).expanduser().resolve()
     if not cfg_path.exists():
         raise FileNotFoundError(f"Benchmark config not found: {cfg_path}")
+
+    seen = set() if _seen is None else set(_seen)
+    if cfg_path in seen:
+        chain = " -> ".join(str(p) for p in [*seen, cfg_path])
+        raise ValueError(f"Cyclic benchmark config inheritance detected: {chain}")
+    seen.add(cfg_path)
+
     with cfg_path.open("r", encoding="utf-8") as f:
         raw = json.load(f)
+    if not isinstance(raw, dict):
+        raise ValueError("Benchmark config root must be a JSON object")
+
+    extends = raw.pop("extends", None)
+    merged = raw
+    if extends is not None:
+        if not isinstance(extends, str) or not extends.strip():
+            raise ValueError("Benchmark config 'extends' must be a non-empty string path")
+        parent_path = Path(extends).expanduser()
+        if not parent_path.is_absolute():
+            parent_path = (cfg_path.parent / parent_path).resolve()
+        parent_raw = _load_benchmark_config_dict(parent_path, _seen=seen)
+        merged = _deep_merge_dicts(parent_raw, raw)
+
+    return _resolve_manifest_paths(merged, cfg_path.parent)
+
+
+def load_benchmark_config(path: str | Path) -> BenchmarkConfig:
+    cfg_path = Path(path).expanduser().resolve()
+    raw = _load_benchmark_config_dict(cfg_path)
     cfg = BenchmarkConfig.from_dict(raw)
 
     root = cfg_path.parent

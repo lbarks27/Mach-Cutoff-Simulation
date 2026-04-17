@@ -274,6 +274,8 @@ The benchmark manifest also declares research-objective thresholds used in the a
 - `max_abort_samples`
 - `max_distance_to_destination_m`
 
+Benchmark manifests may also define `"extends": "<base-manifest>.json"` to inherit and override a shared JSON manifest. Relative paths are resolved from the child manifest location.
+
 Optional flags:
 
 - `--output-root <dir>`
