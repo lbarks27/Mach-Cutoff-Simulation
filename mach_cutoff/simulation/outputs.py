@@ -72,29 +72,7 @@ class EmissionResult:
     effective_mach: float | None = None
     source_mach_cutoff: bool = False
     mach_cutoff: bool = False
-    guidance: GuidanceTelemetry | None = None
     rays: list[RayResult] = field(default_factory=list)
-
-
-@dataclass(slots=True)
-class GuidanceTelemetry:
-    mode: str
-    along_track_distance_m: float
-    cross_track_error_m: float
-    distance_to_destination_m: float
-    desired_heading_deg: float
-    desired_bank_deg: float
-    desired_pitch_deg: float
-    desired_load_factor: float
-    desired_speed_mps: float
-    desired_mach: float
-    desired_body_accel_mps2: np.ndarray
-    optimizer_cost: float
-    predicted_ground_hit_fraction: float
-    predicted_source_cutoff_risk: float
-    predicted_effective_mach: float
-    optimizer_altitude_adjustment_m: float
-    optimizer_mach_adjustment: float
 
 
 @dataclass(slots=True)
@@ -295,27 +273,6 @@ class SimulationResult:
         if summary["num_rays"] > 0:
             summary["ground_hit_fraction"] = float(summary["num_ground_hits"] / summary["num_rays"])
 
-        guidance_samples = [e.guidance for e in self.emissions if e.guidance is not None]
-        if guidance_samples:
-            cross_track_errors = np.asarray([g.cross_track_error_m for g in guidance_samples], dtype=float)
-            dist_to_dest = np.asarray([g.distance_to_destination_m for g in guidance_samples], dtype=float)
-            optimizer_costs = np.asarray([g.optimizer_cost for g in guidance_samples], dtype=float)
-            predicted_ground = np.asarray([g.predicted_ground_hit_fraction for g in guidance_samples], dtype=float)
-            predicted_cutoff = np.asarray([g.predicted_source_cutoff_risk for g in guidance_samples], dtype=float)
-            predicted_eff_mach = np.asarray([g.predicted_effective_mach for g in guidance_samples], dtype=float)
-            mode_counts: dict[str, int] = {}
-            for g in guidance_samples:
-                mode_counts[g.mode] = int(mode_counts.get(g.mode, 0) + 1)
-            summary["num_guidance_samples"] = int(len(guidance_samples))
-            summary["guidance_mode_counts"] = mode_counts
-            summary["guidance_cross_track_abs_mean_m"] = float(np.mean(np.abs(cross_track_errors)))
-            summary["guidance_cross_track_abs_max_m"] = float(np.max(np.abs(cross_track_errors)))
-            summary["guidance_distance_to_destination_final_m"] = float(dist_to_dest[-1])
-            summary["guidance_optimizer_cost_mean"] = float(np.mean(optimizer_costs))
-            summary["guidance_predicted_ground_hit_mean"] = float(np.mean(predicted_ground))
-            summary["guidance_predicted_cutoff_risk_mean"] = float(np.mean(predicted_cutoff))
-            summary["guidance_predicted_effective_mach_mean"] = float(np.mean(predicted_eff_mach))
-
         if self.atmospheric_time_series is not None:
             summary["num_atmospheric_samples"] = int(len(self.atmospheric_time_series.emission_times_utc))
         if self.atmospheric_vertical_profile is not None:
@@ -408,55 +365,6 @@ class SimulationResult:
                 atmospheric_profile_u_wind_mps=self.atmospheric_vertical_profile.u_wind_mps,
                 atmospheric_profile_v_wind_mps=self.atmospheric_vertical_profile.v_wind_mps,
                 atmospheric_profile_effective_sound_speed_mps=self.atmospheric_vertical_profile.effective_sound_speed_mps,
-            )
-        guidance_samples = [e.guidance for e in self.emissions if e.guidance is not None]
-        if guidance_samples:
-            payload.update(
-                guidance_mode=np.asarray([g.mode for g in guidance_samples], dtype="<U32"),
-                guidance_along_track_distance_m=np.asarray(
-                    [g.along_track_distance_m for g in guidance_samples], dtype=np.float32
-                ),
-                guidance_cross_track_error_m=np.asarray(
-                    [g.cross_track_error_m for g in guidance_samples], dtype=np.float32
-                ),
-                guidance_distance_to_destination_m=np.asarray(
-                    [g.distance_to_destination_m for g in guidance_samples], dtype=np.float32
-                ),
-                guidance_desired_heading_deg=np.asarray(
-                    [g.desired_heading_deg for g in guidance_samples], dtype=np.float32
-                ),
-                guidance_desired_bank_deg=np.asarray(
-                    [g.desired_bank_deg for g in guidance_samples], dtype=np.float32
-                ),
-                guidance_desired_pitch_deg=np.asarray(
-                    [g.desired_pitch_deg for g in guidance_samples], dtype=np.float32
-                ),
-                guidance_desired_load_factor=np.asarray(
-                    [g.desired_load_factor for g in guidance_samples], dtype=np.float32
-                ),
-                guidance_desired_speed_mps=np.asarray(
-                    [g.desired_speed_mps for g in guidance_samples], dtype=np.float32
-                ),
-                guidance_desired_mach=np.asarray([g.desired_mach for g in guidance_samples], dtype=np.float32),
-                guidance_desired_body_accel_mps2=np.asarray(
-                    [g.desired_body_accel_mps2 for g in guidance_samples], dtype=np.float32
-                ),
-                guidance_optimizer_cost=np.asarray([g.optimizer_cost for g in guidance_samples], dtype=np.float32),
-                guidance_predicted_ground_hit_fraction=np.asarray(
-                    [g.predicted_ground_hit_fraction for g in guidance_samples], dtype=np.float32
-                ),
-                guidance_predicted_source_cutoff_risk=np.asarray(
-                    [g.predicted_source_cutoff_risk for g in guidance_samples], dtype=np.float32
-                ),
-                guidance_predicted_effective_mach=np.asarray(
-                    [g.predicted_effective_mach for g in guidance_samples], dtype=np.float32
-                ),
-                guidance_optimizer_altitude_adjustment_m=np.asarray(
-                    [g.optimizer_altitude_adjustment_m for g in guidance_samples], dtype=np.float32
-                ),
-                guidance_optimizer_mach_adjustment=np.asarray(
-                    [g.optimizer_mach_adjustment for g in guidance_samples], dtype=np.float32
-                ),
             )
         if self.population_impact is not None:
             pop = self.population_impact

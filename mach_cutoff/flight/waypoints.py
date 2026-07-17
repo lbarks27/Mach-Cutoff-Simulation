@@ -1,4 +1,4 @@
-"""Waypoint ingestion and time interpolation utilities."""
+"""Waypoint ingestion and constant-altitude geodetic path interpolation."""
 
 from __future__ import annotations
 
@@ -10,7 +10,8 @@ from typing import Iterable
 
 import numpy as np
 
-from ..core.geodesy import ecef_to_geodetic, geodetic_to_ecef
+from ..core.constants import WGS84_A_M
+from ..core.geodesy import ecef_to_geodetic, geodetic_to_ecef, normalize_lon_deg
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,8 +67,119 @@ def load_waypoints_json(path: str | Path) -> list[Waypoint]:
     return waypoints
 
 
+def _latlon_to_unit(lat_deg: float, lon_deg: float) -> np.ndarray:
+    lat = np.deg2rad(float(lat_deg))
+    lon = np.deg2rad(float(lon_deg))
+    cos_lat = np.cos(lat)
+    return np.array(
+        [cos_lat * np.cos(lon), cos_lat * np.sin(lon), np.sin(lat)],
+        dtype=float,
+    )
+
+
+def _unit_to_latlon(unit: np.ndarray) -> tuple[float, float]:
+    u = np.asarray(unit, dtype=float).reshape(3)
+    norm = float(np.linalg.norm(u))
+    if norm <= 0.0:
+        return 0.0, 0.0
+    u = u / norm
+    lat = float(np.arcsin(np.clip(u[2], -1.0, 1.0)))
+    lon = float(np.arctan2(u[1], u[0]))
+    return float(np.rad2deg(lat)), float(normalize_lon_deg(np.rad2deg(lon)))
+
+
+def _angular_distance_rad(u0: np.ndarray, u1: np.ndarray) -> float:
+    cos_a = float(np.clip(np.dot(u0, u1), -1.0, 1.0))
+    return float(np.arccos(cos_a))
+
+
+def _great_circle_unit(u0: np.ndarray, u1: np.ndarray, fraction: float) -> np.ndarray:
+    """Spherical linear interpolation of unit vectors (great-circle)."""
+    f = float(np.clip(fraction, 0.0, 1.0))
+    u0 = np.asarray(u0, dtype=float).reshape(3)
+    u1 = np.asarray(u1, dtype=float).reshape(3)
+    n0 = float(np.linalg.norm(u0))
+    n1 = float(np.linalg.norm(u1))
+    if n0 <= 0.0 or n1 <= 0.0:
+        return np.array([1.0, 0.0, 0.0], dtype=float)
+    u0 = u0 / n0
+    u1 = u1 / n1
+    cos_a = float(np.clip(np.dot(u0, u1), -1.0, 1.0))
+    angle = float(np.arccos(cos_a))
+    if angle < 1e-12:
+        return u0.copy()
+    # Nearly antipodal: fall back to linear then renorm.
+    if abs(np.pi - angle) < 1e-8:
+        u = (1.0 - f) * u0 + f * u1
+        n = float(np.linalg.norm(u))
+        return u / n if n > 0.0 else u0.copy()
+    sin_a = float(np.sin(angle))
+    s0 = float(np.sin((1.0 - f) * angle) / sin_a)
+    s1 = float(np.sin(f * angle) / sin_a)
+    u = s0 * u0 + s1 * u1
+    n = float(np.linalg.norm(u))
+    return u / n if n > 0.0 else u0.copy()
+
+
+def _geodetic_on_segment(
+    lat0: float,
+    lon0: float,
+    alt0: float,
+    lat1: float,
+    lon1: float,
+    alt1: float,
+    fraction: float,
+    u0: np.ndarray | None = None,
+    u1: np.ndarray | None = None,
+) -> tuple[float, float, float]:
+    """Great-circle lat/lon + linear altitude between two geodetic waypoints."""
+    f = float(np.clip(fraction, 0.0, 1.0))
+    if u0 is None:
+        u0 = _latlon_to_unit(lat0, lon0)
+    if u1 is None:
+        u1 = _latlon_to_unit(lat1, lon1)
+    lat, lon = _unit_to_latlon(_great_circle_unit(u0, u1, f))
+    alt = float((1.0 - f) * alt0 + f * alt1)
+    return lat, lon, alt
+
+
+def _tangent_ecef_on_segment(
+    lat0: float,
+    lon0: float,
+    alt0: float,
+    lat1: float,
+    lon1: float,
+    alt1: float,
+    fraction: float,
+    u0: np.ndarray,
+    u1: np.ndarray,
+) -> np.ndarray:
+    """Unit ECEF tangent along the constant-alt (linear-alt) great-circle path."""
+    f = float(np.clip(fraction, 0.0, 1.0))
+    # Finite difference along the geodetic path (not ECEF chord).
+    df = 1e-5
+    f_a = max(0.0, f - df)
+    f_b = min(1.0, f + df)
+    if f_b <= f_a:
+        f_a, f_b = 0.0, min(1.0, 1e-5)
+    lat_a, lon_a, alt_a = _geodetic_on_segment(lat0, lon0, alt0, lat1, lon1, alt1, f_a, u0, u1)
+    lat_b, lon_b, alt_b = _geodetic_on_segment(lat0, lon0, alt0, lat1, lon1, alt1, f_b, u0, u1)
+    p_a = geodetic_to_ecef(lat_a, lon_a, alt_a).reshape(3)
+    p_b = geodetic_to_ecef(lat_b, lon_b, alt_b).reshape(3)
+    v = p_b - p_a
+    n = float(np.linalg.norm(v))
+    if n <= 0.0:
+        return np.array([1.0, 0.0, 0.0], dtype=float)
+    return v / n
+
+
 class FlightPath:
-    """Time-parameterized flight path from geodetic waypoints."""
+    """Time-parameterized flight path with constant-altitude geodetic segments.
+
+    Horizontal motion follows a great-circle between waypoint lat/lon. Altitude is
+    linearly interpolated between endpoints, so equal endpoint altitudes stay
+    constant along the segment (no ECEF-chord altitude dip).
+    """
 
     def __init__(self, waypoints: Iterable[Waypoint]):
         self.waypoints = list(waypoints)
@@ -81,11 +193,35 @@ class FlightPath:
         if not np.all(np.diff(self._times) > 0.0):
             raise ValueError("Waypoint times must be strictly increasing")
 
-        ecef = [geodetic_to_ecef(wp.lat_deg, wp.lon_deg, wp.alt_m) for wp in self.waypoints]
-        self._ecef = np.asarray(ecef, dtype=float)
-        self._segment_vectors = self._ecef[1:] - self._ecef[:-1]
-        self._segment_lengths_m = np.linalg.norm(self._segment_vectors, axis=1)
-        self._cum_length_m = np.concatenate([[0.0], np.cumsum(self._segment_lengths_m)])
+        self._lats = np.asarray([wp.lat_deg for wp in self.waypoints], dtype=float)
+        self._lons = np.asarray([wp.lon_deg for wp in self.waypoints], dtype=float)
+        self._alts = np.asarray([wp.alt_m for wp in self.waypoints], dtype=float)
+        self._unit = np.asarray(
+            [_latlon_to_unit(lat, lon) for lat, lon in zip(self._lats, self._lons, strict=True)],
+            dtype=float,
+        )
+        # Keep endpoint ECEF for projection bookkeeping / convenience.
+        self._ecef = np.asarray(
+            [
+                geodetic_to_ecef(wp.lat_deg, wp.lon_deg, wp.alt_m).reshape(3)
+                for wp in self.waypoints
+            ],
+            dtype=float,
+        )
+
+        n_seg = len(self.waypoints) - 1
+        segment_lengths = np.zeros(n_seg, dtype=float)
+        angles = np.zeros(n_seg, dtype=float)
+        for i in range(n_seg):
+            angle = _angular_distance_rad(self._unit[i], self._unit[i + 1])
+            angles[i] = angle
+            # Arc length at mean altitude (spherical approximation of WGS84 radius).
+            mean_alt = 0.5 * (float(self._alts[i]) + float(self._alts[i + 1]))
+            segment_lengths[i] = float(angle * (WGS84_A_M + mean_alt))
+
+        self._segment_angles_rad = angles
+        self._segment_lengths_m = segment_lengths
+        self._cum_length_m = np.concatenate([[0.0], np.cumsum(segment_lengths)])
 
     @property
     def start_time(self) -> datetime:
@@ -105,7 +241,7 @@ class FlightPath:
 
     @property
     def segment_count(self) -> int:
-        return int(len(self._segment_vectors))
+        return int(len(self._segment_lengths_m))
 
     def _segment_index(self, t_epoch: float) -> int:
         if t_epoch <= self._times[0]:
@@ -123,102 +259,121 @@ class FlightPath:
         idx = int(np.searchsorted(self._cum_length_m, distance_m, side="right") - 1)
         return max(0, min(idx, len(self._cum_length_m) - 2))
 
+    def _state_on_segment(self, i: int, fraction: float) -> dict:
+        f = float(np.clip(fraction, 0.0, 1.0))
+        lat0 = float(self._lats[i])
+        lon0 = float(self._lons[i])
+        alt0 = float(self._alts[i])
+        lat1 = float(self._lats[i + 1])
+        lon1 = float(self._lons[i + 1])
+        alt1 = float(self._alts[i + 1])
+        u0 = self._unit[i]
+        u1 = self._unit[i + 1]
+
+        lat, lon, alt = _geodetic_on_segment(lat0, lon0, alt0, lat1, lon1, alt1, f, u0, u1)
+        ecef = geodetic_to_ecef(lat, lon, alt).reshape(3)
+        tangent = _tangent_ecef_on_segment(lat0, lon0, alt0, lat1, lon1, alt1, f, u0, u1)
+        return {
+            "ecef_m": np.asarray(ecef, dtype=float),
+            "lat_deg": float(lat),
+            "lon_deg": float(lon),
+            "alt_m": float(alt),
+            "tangent_ecef": np.asarray(tangent, dtype=float),
+            "segment_index": int(i),
+            "segment_fraction": float(f),
+        }
+
     def state_at(self, time_utc: datetime):
         t = time_utc.timestamp()
         i = self._segment_index(t)
 
         t0 = self._times[i]
         t1 = self._times[i + 1]
-        f = 0.0 if t1 == t0 else np.clip((t - t0) / (t1 - t0), 0.0, 1.0)
-
-        p0 = self._ecef[i]
-        p1 = self._ecef[i + 1]
-        p = (1.0 - f) * p0 + f * p1
-
-        v = p1 - p0
-        v_norm = np.linalg.norm(v)
-        tangent = v / v_norm if v_norm > 0.0 else np.array([1.0, 0.0, 0.0], dtype=float)
-
-        lat, lon, alt = ecef_to_geodetic(p[0], p[1], p[2])
-        return {
-            "ecef_m": p,
-            "lat_deg": float(lat),
-            "lon_deg": float(lon),
-            "alt_m": float(alt),
-            "tangent_ecef": tangent,
-            "segment_index": i,
-            "segment_fraction": float(f),
-        }
+        f = 0.0 if t1 == t0 else float(np.clip((t - t0) / (t1 - t0), 0.0, 1.0))
+        return self._state_on_segment(i, f)
 
     def state_at_distance(self, distance_m: float):
         s = float(np.clip(distance_m, 0.0, self._cum_length_m[-1]))
         i = self._segment_index_for_distance(s)
 
-        s0 = self._cum_length_m[i]
-        s1 = self._cum_length_m[i + 1]
-        f = 0.0 if s1 == s0 else np.clip((s - s0) / (s1 - s0), 0.0, 1.0)
-
-        p0 = self._ecef[i]
-        p1 = self._ecef[i + 1]
-        p = (1.0 - f) * p0 + f * p1
-
-        v = self._segment_vectors[i]
-        v_norm = np.linalg.norm(v)
-        tangent = v / v_norm if v_norm > 0.0 else np.array([1.0, 0.0, 0.0], dtype=float)
-
-        lat, lon, alt = ecef_to_geodetic(p[0], p[1], p[2])
-        return {
-            "ecef_m": p,
-            "lat_deg": float(lat),
-            "lon_deg": float(lon),
-            "alt_m": float(alt),
-            "tangent_ecef": tangent,
-            "segment_index": i,
-            "segment_fraction": float(f),
-            "distance_m": s,
-        }
+        s0 = float(self._cum_length_m[i])
+        s1 = float(self._cum_length_m[i + 1])
+        f = 0.0 if s1 == s0 else float(np.clip((s - s0) / (s1 - s0), 0.0, 1.0))
+        state = self._state_on_segment(i, f)
+        state["distance_m"] = s
+        return state
 
     def project_ecef(self, ecef_m: np.ndarray):
-        """Project an ECEF point onto the piecewise-linear route."""
+        """Project an ECEF point onto the piecewise-geodesic route."""
         p = np.asarray(ecef_m, dtype=float).reshape(3)
+        # Spherical unit direction of query (for along-track fraction).
+        lat_q, lon_q, alt_q = ecef_to_geodetic(p[0], p[1], p[2])
+        u_q = _latlon_to_unit(float(lat_q), float(lon_q))
+
         best_i = 0
         best_f = 0.0
-        best_point = self._ecef[0]
-        best_dist2 = np.inf
+        best_point = self._ecef[0].copy()
+        best_dist2 = float(np.inf)
 
-        for i, seg in enumerate(self._segment_vectors):
-            p0 = self._ecef[i]
-            seg_len2 = float(np.dot(seg, seg))
-            if seg_len2 <= 1e-12:
+        for i in range(self.segment_count):
+            u0 = self._unit[i]
+            u1 = self._unit[i + 1]
+            angle = float(self._segment_angles_rad[i])
+            if angle < 1e-12:
+                candidate_state = self._state_on_segment(i, 0.0)
+                candidate = candidate_state["ecef_m"]
                 f = 0.0
-                candidate = p0
             else:
-                f = float(np.clip(np.dot(p - p0, seg) / seg_len2, 0.0, 1.0))
-                candidate = p0 + f * seg
-            dist2 = float(np.dot(p - candidate, p - candidate))
+                # Project query onto the great-circle plane of the segment.
+                normal = np.cross(u0, u1)
+                n_norm = float(np.linalg.norm(normal))
+                if n_norm <= 1e-12:
+                    f = 0.0
+                else:
+                    normal = normal / n_norm
+                    u_plane = u_q - float(np.dot(u_q, normal)) * normal
+                    plane_norm = float(np.linalg.norm(u_plane))
+                    if plane_norm <= 1e-12:
+                        f = 0.0
+                    else:
+                        u_plane = u_plane / plane_norm
+                        # Fraction along arc from angle from u0 toward u1.
+                        # Use atan2 form for robust signed progress on the arc.
+                        e1 = u0
+                        e2 = np.cross(normal, u0)
+                        e2 = e2 / max(float(np.linalg.norm(e2)), 1e-15)
+                        ang_q = float(np.arctan2(np.dot(u_plane, e2), np.dot(u_plane, e1)))
+                        # Segment spans [0, angle] in this basis (positive toward u1).
+                        if ang_q < 0.0:
+                            # Prefer the shorter direction; clamp to endpoints.
+                            if abs(ang_q) <= abs(ang_q - angle):
+                                ang_q = 0.0
+                            else:
+                                ang_q = angle
+                        f = float(np.clip(ang_q / angle, 0.0, 1.0))
+                candidate_state = self._state_on_segment(i, f)
+                candidate = candidate_state["ecef_m"]
+
+            delta = p - candidate
+            dist2 = float(np.dot(delta, delta))
             if dist2 < best_dist2:
                 best_dist2 = dist2
                 best_i = i
                 best_f = f
-                best_point = candidate
+                best_point = np.asarray(candidate, dtype=float)
 
-        seg_vec = self._segment_vectors[best_i]
-        seg_norm = float(np.linalg.norm(seg_vec))
-        tangent = seg_vec / seg_norm if seg_norm > 0.0 else np.array([1.0, 0.0, 0.0], dtype=float)
+        state = self._state_on_segment(best_i, best_f)
         along_distance_m = float(self._cum_length_m[best_i] + best_f * self._segment_lengths_m[best_i])
-        cross_track_m = float(np.sqrt(max(best_dist2, 0.0)))
-
-        lat, lon, alt = ecef_to_geodetic(best_point[0], best_point[1], best_point[2])
         return {
             "distance_m": along_distance_m,
-            "cross_track_m": cross_track_m,
-            "segment_index": best_i,
+            "cross_track_m": float(np.sqrt(max(best_dist2, 0.0))),
+            "segment_index": int(best_i),
             "segment_fraction": float(best_f),
             "nearest_ecef_m": np.asarray(best_point, dtype=float),
-            "nearest_lat_deg": float(lat),
-            "nearest_lon_deg": float(lon),
-            "nearest_alt_m": float(alt),
-            "tangent_ecef": tangent,
+            "nearest_lat_deg": float(state["lat_deg"]),
+            "nearest_lon_deg": float(state["lon_deg"]),
+            "nearest_alt_m": float(state["alt_m"]),
+            "tangent_ecef": np.asarray(state["tangent_ecef"], dtype=float),
         }
 
     def sample_times(

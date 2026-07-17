@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
 
 import numpy as np
 
@@ -25,16 +25,36 @@ class AircraftState:
 
 
 class PointMassAircraft:
+    """Open-loop point-mass aircraft that follows a straight-line waypoint path.
+
+    Position is piecewise-linear between waypoints. Segment ground speed is
+    derived from waypoint times (segment length / segment duration). There is
+    no closed-loop guidance: the aircraft simply tracks the prescribed schedule.
+    """
+
     def __init__(self, flight_path: FlightPath, config: AircraftConfig):
         self.flight_path = flight_path
         self.config = config
-        self._speed_mps = float(config.mach * config.reference_sound_speed_mps)
-        if self._speed_mps <= 0.0:
-            raise ValueError("Aircraft speed must be positive")
+        self._ref_sound_speed_mps = float(config.reference_sound_speed_mps)
+        if self._ref_sound_speed_mps <= 0.0:
+            raise ValueError("aircraft.reference_sound_speed_mps must be positive")
+
+        segment_lengths_m = np.asarray(flight_path._segment_lengths_m, dtype=float)
+        times = np.asarray(flight_path._times, dtype=float)
+        dt_s = np.diff(times)
+        if np.any(dt_s <= 0.0):
+            raise ValueError("Waypoint times must be strictly increasing for open-loop flight")
+
+        # Ground speed per straight-line segment from the schedule.
+        self._segment_speed_mps = (segment_lengths_m / dt_s).astype(float)
+        if np.any(~np.isfinite(self._segment_speed_mps)):
+            raise ValueError("Non-finite segment speeds from waypoint schedule")
+
         self._start_time = self.flight_path.start_time
-        self._route_length_m = float(self.flight_path.total_length_m)
-        self._duration_s = float(self._route_length_m / self._speed_mps)
-        self._end_time = self._start_time + timedelta(seconds=self._duration_s)
+        self._end_time = self.flight_path.end_time
+        self._duration_s = float(self.flight_path.duration_s)
+        if self._duration_s <= 0.0:
+            raise ValueError("Flight path duration must be positive")
 
     @property
     def start_time(self) -> datetime:
@@ -49,33 +69,40 @@ class PointMassAircraft:
         return self._duration_s
 
     def state_at(self, time_utc: datetime) -> AircraftState:
-        elapsed_s = float((time_utc - self._start_time).total_seconds())
-        elapsed_s = float(np.clip(elapsed_s, 0.0, self._duration_s))
-        distance_m = elapsed_s * self._speed_mps
-        path_state = self.flight_path.state_at_distance(distance_m)
-        lat = path_state["lat_deg"]
-        lon = path_state["lon_deg"]
-        alt = path_state["alt_m"]
-        position_ecef = np.asarray(path_state["ecef_m"], dtype=float)
+        # Clamp sampling to the scheduled route window; hold endpoints outside it.
+        t_epoch = float(time_utc.timestamp())
+        t0 = float(self.flight_path._times[0])
+        t1 = float(self.flight_path._times[-1])
+        sample_epoch = float(np.clip(t_epoch, t0, t1))
+        sample_time = datetime.fromtimestamp(sample_epoch, tz=time_utc.tzinfo or self._start_time.tzinfo)
 
-        speed = self._speed_mps
+        path_state = self.flight_path.state_at(sample_time)
+        segment_index = int(path_state["segment_index"])
+        segment_index = max(0, min(segment_index, len(self._segment_speed_mps) - 1))
+
+        speed = float(self._segment_speed_mps[segment_index])
+        # Zero-length segments (hover / hold) produce zero speed.
+        if not np.isfinite(speed) or speed < 0.0:
+            speed = 0.0
+        mach = float(speed / self._ref_sound_speed_mps)
+
         tangent = np.asarray(path_state["tangent_ecef"], dtype=float)
-        tangent_norm = np.linalg.norm(tangent)
-        if tangent_norm == 0.0:
-            tangent = np.array([1.0, 0.0, 0.0], dtype=float)
+        tangent_norm = float(np.linalg.norm(tangent))
+        if tangent_norm <= 0.0:
+            unit_tangent = np.array([1.0, 0.0, 0.0], dtype=float)
         else:
-            tangent = tangent / tangent_norm
+            unit_tangent = tangent / tangent_norm
+        velocity_ecef = unit_tangent * speed if speed > 0.0 else np.zeros(3, dtype=float)
 
-        velocity_ecef = tangent * speed
         return AircraftState(
             time_utc=time_utc,
-            lat_deg=float(lat),
-            lon_deg=float(lon),
-            alt_m=float(alt),
-            position_ecef_m=np.asarray(position_ecef, dtype=float),
+            lat_deg=float(path_state["lat_deg"]),
+            lon_deg=float(path_state["lon_deg"]),
+            alt_m=float(path_state["alt_m"]),
+            position_ecef_m=np.asarray(path_state["ecef_m"], dtype=float),
             velocity_ecef_mps=np.asarray(velocity_ecef, dtype=float),
             speed_mps=float(speed),
-            mach=float(self.config.mach),
+            mach=float(mach),
         )
 
 
@@ -105,6 +132,8 @@ def generate_shock_directions(
         raise ValueError("rays_per_emission must be positive")
 
     mach = aircraft_state.mach
+    if mach <= 1.0:
+        raise ValueError("generate_shock_directions requires supersonic aircraft mach > 1.0")
     mach_angle = np.arcsin(1.0 / mach)
     launch_angle = 0.5 * np.pi - mach_angle
 

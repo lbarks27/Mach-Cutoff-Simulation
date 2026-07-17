@@ -13,7 +13,6 @@ from typing import Any
 
 from ..config import ExperimentConfig, RouteOptimizationConfig, load_config
 from ..flight.waypoints import FlightPath, Waypoint
-from ..guidance_config import GuidanceConfig, load_guidance_config
 from ..simulation.engine import MachCutoffSimulator
 from ..simulation.route_optimizer import (
     RouteOptimizationSettings,
@@ -41,10 +40,6 @@ def _deep_update(base: dict[str, Any], override: dict[str, Any]) -> dict[str, An
 
 def _clone_experiment_config(cfg: ExperimentConfig) -> ExperimentConfig:
     return ExperimentConfig.from_dict(copy.deepcopy(cfg.to_dict()))
-
-
-def _clone_guidance_config(cfg: GuidanceConfig) -> GuidanceConfig:
-    return GuidanceConfig.from_dict(copy.deepcopy(cfg.to_dict()))
 
 
 def _haversine_km(lat0: float, lon0: float, lat1: float, lon1: float) -> float:
@@ -170,30 +165,15 @@ def _configure_defaults_for_benchmark(cfg: ExperimentConfig, benchmark_cfg: Benc
         cfg.visualization.include_atmosphere = False
 
 
-def _apply_route_class(
-    cfg: ExperimentConfig,
-    guidance: GuidanceConfig,
-    route_class: RouteClassConfig,
-):
+def _apply_route_class(cfg: ExperimentConfig, route_class: RouteClassConfig) -> ExperimentConfig:
     cfg_dict = cfg.to_dict()
-    guidance_dict = guidance.to_dict()
     _deep_update(cfg_dict, route_class.config_overrides)
-    _deep_update(guidance_dict, route_class.guidance_overrides)
-
-    cfg2 = ExperimentConfig.from_dict(cfg_dict)
-    guidance2 = GuidanceConfig.from_dict(guidance_dict)
-    return cfg2, guidance2
+    return ExperimentConfig.from_dict(cfg_dict)
 
 
-def _apply_sensitivity(
-    cfg: ExperimentConfig,
-    guidance: GuidanceConfig,
-    profile: SensitivityProfileConfig,
-):
+def _apply_sensitivity(cfg: ExperimentConfig, profile: SensitivityProfileConfig) -> ExperimentConfig:
     cfg_dict = cfg.to_dict()
-    guidance_dict = guidance.to_dict()
     _deep_update(cfg_dict, profile.config_overrides)
-    _deep_update(guidance_dict, profile.guidance_overrides)
 
     if profile.route_weight_multipliers:
         ro = cfg_dict.setdefault("route_optimization", {})
@@ -201,9 +181,7 @@ def _apply_sensitivity(
             if key in ro:
                 ro[key] = float(ro[key]) * float(factor)
 
-    cfg2 = ExperimentConfig.from_dict(cfg_dict)
-    guidance2 = GuidanceConfig.from_dict(guidance_dict)
-    return cfg2, guidance2
+    return ExperimentConfig.from_dict(cfg_dict)
 
 
 def _render_visual_outputs(
@@ -266,7 +244,6 @@ def run_benchmark(
     output_root.mkdir(parents=True, exist_ok=True)
 
     base_cfg = load_config(benchmark_cfg.base_config_path)
-    base_guidance = load_guidance_config(benchmark_cfg.base_guidance_config_path)
 
     prepared_population_path = ensure_prepared_population_dataset(benchmark_cfg.gpw)
 
@@ -297,7 +274,6 @@ def run_benchmark(
                     route_class=route_class,
                     sensitivity_profile=None,
                     base_cfg=base_cfg,
-                    base_guidance=base_guidance,
                     prepared_population_path=prepared_population_path,
                     resume=resume,
                     force=force,
@@ -326,7 +302,6 @@ def run_benchmark(
                             route_class=route_class,
                             sensitivity_profile=profile,
                             base_cfg=base_cfg,
-                            base_guidance=base_guidance,
                             prepared_population_path=prepared_population_path,
                             resume=resume,
                             force=force,
@@ -370,7 +345,6 @@ def _run_single(
     route_class: RouteClassConfig,
     sensitivity_profile: SensitivityProfileConfig | None,
     base_cfg: ExperimentConfig,
-    base_guidance: GuidanceConfig,
     prepared_population_path: Path,
     resume: bool,
     force: bool,
@@ -404,13 +378,12 @@ def _run_single(
             }
 
     cfg = _clone_experiment_config(base_cfg)
-    guidance = _clone_guidance_config(base_guidance)
     _configure_defaults_for_benchmark(cfg, benchmark_cfg)
     cfg.population.dataset_path = str(prepared_population_path)
 
-    cfg, guidance = _apply_route_class(cfg, guidance, route_class)
+    cfg = _apply_route_class(cfg, route_class)
     if sensitivity_profile is not None:
-        cfg, guidance = _apply_sensitivity(cfg, guidance, sensitivity_profile)
+        cfg = _apply_sensitivity(cfg, sensitivity_profile)
 
     cfg.visualization.output_dir = str(run_dir)
 
@@ -423,7 +396,6 @@ def _run_single(
                 "route_class": route_class_id,
                 "sensitivity_profile": sensitivity_profile_id,
                 "config": cfg.to_dict(),
-                "guidance_config": guidance.to_dict(),
                 "prepared_population_dataset": str(prepared_population_path),
             },
             indent=2,
@@ -444,7 +416,6 @@ def _run_single(
             outcome = optimize_route_with_reruns(
                 flight_path=path,
                 config=cfg,
-                guidance_config=guidance,
                 output_dir=run_dir,
                 settings=settings,
             )
@@ -454,7 +425,7 @@ def _run_single(
             if outcome.optimized_waypoints_path.exists():
                 shutil.copy2(outcome.optimized_waypoints_path, optimized_waypoints_out)
         else:
-            simulator = MachCutoffSimulator(cfg, guidance_config=guidance)
+            simulator = MachCutoffSimulator(cfg)
             result = simulator.run(path)
 
         result.save_json_summary(summary_path)

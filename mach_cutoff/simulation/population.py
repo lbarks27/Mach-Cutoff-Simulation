@@ -36,56 +36,6 @@ class _PopulationGrid:
     population_grid: np.ndarray
 
 
-@dataclass(slots=True)
-class PopulationCorridorSampler:
-    source_name: str
-    lat_edges_deg: np.ndarray | None
-    lon_edges_deg: np.ndarray | None
-    density_grid_people_per_km2: np.ndarray | None
-    point_lat_deg: np.ndarray | None
-    point_lon_deg: np.ndarray | None
-    point_population: np.ndarray | None
-
-    def local_density_people_per_km2(
-        self,
-        lat_deg: float,
-        lon_deg: float,
-        *,
-        half_width_km: float,
-    ) -> float:
-        half_width_km = max(float(half_width_km), 1e-3)
-        lon_deg = float(normalize_lon_deg(np.asarray([lon_deg], dtype=np.float64)).reshape(-1)[0])
-        lat_deg = float(lat_deg)
-
-        if self.density_grid_people_per_km2 is not None and self.lat_edges_deg is not None and self.lon_edges_deg is not None:
-            lat_edges = np.asarray(self.lat_edges_deg, dtype=np.float64)
-            lon_edges = np.asarray(self.lon_edges_deg, dtype=np.float64)
-            density = np.asarray(self.density_grid_people_per_km2, dtype=np.float64)
-            lat_radius_deg = half_width_km / _KM_PER_DEG
-            lon_radius_deg = half_width_km / max(1e-3, _KM_PER_DEG * np.cos(np.deg2rad(lat_deg)))
-            lat_mask = (lat_edges[:-1] < lat_deg + lat_radius_deg) & (lat_edges[1:] > lat_deg - lat_radius_deg)
-            lon_mask = (lon_edges[:-1] < lon_deg + lon_radius_deg) & (lon_edges[1:] > lon_deg - lon_radius_deg)
-            if np.any(lat_mask) and np.any(lon_mask):
-                window = density[np.ix_(lat_mask, lon_mask)]
-                if window.size:
-                    return float(np.mean(window))
-            return 0.0
-
-        if self.point_lat_deg is not None and self.point_lon_deg is not None and self.point_population is not None:
-            lat = np.asarray(self.point_lat_deg, dtype=np.float64)
-            lon = np.asarray(self.point_lon_deg, dtype=np.float64)
-            pop = np.asarray(self.point_population, dtype=np.float64)
-            lat_radius_deg = half_width_km / _KM_PER_DEG
-            lon_radius_deg = half_width_km / max(1e-3, _KM_PER_DEG * np.cos(np.deg2rad(lat_deg)))
-            mask = (np.abs(lat - lat_deg) <= lat_radius_deg) & (np.abs(lon - lon_deg) <= lon_radius_deg)
-            if not np.any(mask):
-                return 0.0
-            area_km2 = max((2.0 * half_width_km) ** 2, 1.0)
-            return float(np.sum(pop[mask]) / area_km2)
-
-        return 0.0
-
-
 def _read_population_csv(stream: TextIO, source_name: str, source_path: str) -> _PopulationPoints:
     reader = csv.DictReader(stream)
     if not reader.fieldnames:
@@ -219,43 +169,6 @@ def _load_population_source(dataset_path: str | None) -> _PopulationPoints | _Po
         return _load_population_npz(path)
 
     raise ValueError("Population dataset must be .csv, .txt, or .npz")
-
-
-def build_population_corridor_sampler(dataset_path: str | None) -> PopulationCorridorSampler | None:
-    try:
-        source = _load_population_source(dataset_path)
-    except Exception:
-        return None
-
-    if isinstance(source, _PopulationGrid):
-        lat_edges = np.asarray(source.lat_edges_deg, dtype=np.float64)
-        lon_edges = np.asarray(source.lon_edges_deg, dtype=np.float64)
-        lat_centers = 0.5 * (lat_edges[:-1] + lat_edges[1:])
-        dlat_km = np.abs(np.diff(lat_edges)) * _KM_PER_DEG
-        dlon_km = np.abs(np.diff(lon_edges))[None, :] * (
-            _KM_PER_DEG * np.cos(np.deg2rad(lat_centers))
-        )[:, None]
-        cell_area_km2 = np.maximum(dlat_km[:, None] * dlon_km, 1e-6)
-        density = np.asarray(source.population_grid, dtype=np.float64) / cell_area_km2
-        return PopulationCorridorSampler(
-            source_name=source.source_name,
-            lat_edges_deg=lat_edges,
-            lon_edges_deg=lon_edges,
-            density_grid_people_per_km2=density,
-            point_lat_deg=None,
-            point_lon_deg=None,
-            point_population=None,
-        )
-
-    return PopulationCorridorSampler(
-        source_name=source.source_name,
-        lat_edges_deg=None,
-        lon_edges_deg=None,
-        density_grid_people_per_km2=None,
-        point_lat_deg=np.asarray(source.lat_deg, dtype=np.float64),
-        point_lon_deg=np.asarray(source.lon_deg, dtype=np.float64),
-        point_population=np.asarray(source.population, dtype=np.float64),
-    )
 
 
 def _analysis_domain_bounds(emissions: list[EmissionResult], pad_deg: float) -> tuple[float, float, float, float]:

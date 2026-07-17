@@ -38,7 +38,6 @@ class CorridorConfig:
 class RouteClassConfig:
     route_class_id: str
     config_overrides: dict[str, Any] = field(default_factory=dict)
-    guidance_overrides: dict[str, Any] = field(default_factory=dict)
     notes: str = ""
 
 
@@ -46,7 +45,6 @@ class RouteClassConfig:
 class SensitivityProfileConfig:
     profile_id: str
     config_overrides: dict[str, Any] = field(default_factory=dict)
-    guidance_overrides: dict[str, Any] = field(default_factory=dict)
     route_weight_multipliers: dict[str, float] = field(default_factory=dict)
     notes: str = ""
 
@@ -66,7 +64,6 @@ class BenchmarkConfig:
     name: str
     output_root: str
     base_config_path: str
-    base_guidance_config_path: str
     population_cache_dir: str = ".cache/population"
     gpw: GPWConfig = field(default_factory=GPWConfig)
     route_classes: dict[str, RouteClassConfig] = field(default_factory=dict)
@@ -99,7 +96,6 @@ class BenchmarkConfig:
             route_classes[key] = RouteClassConfig(
                 route_class_id=key,
                 config_overrides=dict(payload.get("config_overrides", {})),
-                guidance_overrides=dict(payload.get("guidance_overrides", {})),
                 notes=str(payload.get("notes", "")),
             )
 
@@ -127,7 +123,6 @@ class BenchmarkConfig:
             sensitivity_profiles[key] = SensitivityProfileConfig(
                 profile_id=key,
                 config_overrides=dict(payload.get("config_overrides", {})),
-                guidance_overrides=dict(payload.get("guidance_overrides", {})),
                 route_weight_multipliers=multipliers,
                 notes=str(payload.get("notes", "")),
             )
@@ -136,7 +131,6 @@ class BenchmarkConfig:
             name=str(raw["name"]),
             output_root=str(raw.get("output_root", f"benchmarks/{raw['name']}")),
             base_config_path=str(raw["base_config_path"]),
-            base_guidance_config_path=str(raw["base_guidance_config_path"]),
             population_cache_dir=str(raw.get("population_cache_dir", ".cache/population")),
             gpw=gpw,
             route_classes=route_classes,
@@ -178,7 +172,7 @@ def _resolve_manifest_path(value: object, root: Path) -> object:
 
 def _resolve_manifest_paths(raw: dict[str, Any], root: Path) -> dict[str, Any]:
     resolved = copy.deepcopy(raw)
-    for key in ("output_root", "base_config_path", "base_guidance_config_path", "population_cache_dir"):
+    for key in ("output_root", "base_config_path", "population_cache_dir"):
         if key in resolved:
             resolved[key] = _resolve_manifest_path(resolved[key], root)
 
@@ -231,11 +225,6 @@ def load_benchmark_config(path: str | Path) -> BenchmarkConfig:
         str((root / cfg.base_config_path).resolve())
         if not Path(cfg.base_config_path).is_absolute()
         else cfg.base_config_path
-    )
-    cfg.base_guidance_config_path = (
-        str((root / cfg.base_guidance_config_path).resolve())
-        if not Path(cfg.base_guidance_config_path).is_absolute()
-        else cfg.base_guidance_config_path
     )
 
     if not Path(cfg.gpw.raw_cache_dir).is_absolute():

@@ -10,7 +10,6 @@ from pathlib import Path
 import numpy as np
 
 from ..flight.aircraft import PointMassAircraft, generate_shock_directions
-from ..flight.guidance import GuidanceFeedback, GuidedPointMassAircraft
 from ..atmosphere.acoustics import build_acoustic_grid_field, compute_effective_sound_speed_mps
 from ..atmosphere.hrrr import HRRRDatasetManager
 from ..atmosphere.interpolation import HRRRInterpolator
@@ -18,13 +17,11 @@ from ..config import ExperimentConfig
 from ..core.geodesy import ecef_to_geodetic, ecef_to_enu, enu_basis, enu_to_ecef, normalize_lon_deg
 from ..core.raytrace import integrate_ray
 from ..flight.waypoints import FlightPath, load_waypoints_json
-from ..guidance_config import GuidanceConfig
 from .outputs import (
     AtmosphericGrid3D,
     AtmosphericTimeSeries,
     AtmosphericVerticalProfile,
     EmissionResult,
-    GuidanceTelemetry,
     RayResult,
     SimulationResult,
 )
@@ -78,9 +75,8 @@ def _terrain_from_snapshot(snapshot):
 
 
 class MachCutoffSimulator:
-    def __init__(self, config: ExperimentConfig, guidance_config: GuidanceConfig | None = None):
+    def __init__(self, config: ExperimentConfig):
         self.config = config
-        self.guidance_config = guidance_config or GuidanceConfig()
 
     def run_from_waypoint_file(self, waypoint_json_path: str | Path) -> SimulationResult:
         waypoints = load_waypoints_json(waypoint_json_path)
@@ -88,19 +84,7 @@ class MachCutoffSimulator:
         return self.run(path)
 
     def run(self, path: FlightPath) -> SimulationResult:
-        if self.guidance_config.enabled:
-            aircraft = GuidedPointMassAircraft(
-                path,
-                self.config.aircraft,
-                self.guidance_config,
-                population_config=self.config.population,
-            )
-            guidance_feedback = GuidanceFeedback()
-            wind_for_propagation_enu = np.zeros(3, dtype=float)
-        else:
-            aircraft = PointMassAircraft(path, self.config.aircraft)
-            guidance_feedback = None
-            wind_for_propagation_enu = None
+        aircraft = PointMassAircraft(path, self.config.aircraft)
 
         start_time = _parse_time_iso(self.config.runtime.start_time_iso) or aircraft.start_time
         emission_interval_s = float(self.config.shock.emission_interval_s)
@@ -159,7 +143,7 @@ class MachCutoffSimulator:
         best_remaining_m = float(path.total_length_m)
         last_distance_to_destination_m = best_remaining_m
         stalled_emissions = 0
-        stall_limit_emissions = 2_400  # Prevent unbounded loops if guidance never converges.
+        stall_limit_emissions = 2_400  # Prevent unbounded loops if progress stalls.
         termination_reason = "destination_reached"
 
         with ray_pool_context as ray_pool:
@@ -169,19 +153,11 @@ class MachCutoffSimulator:
                     break
                 emit_idx += 1
 
-                if self.guidance_config.enabled:
-                    aircraft.ingest_feedback(guidance_feedback or GuidanceFeedback())
-                    state, guidance_command = aircraft.state_at(emit_time, wind_enu_mps=wind_for_propagation_enu)
-                else:
-                    state = aircraft.state_at(emit_time)
-                    guidance_command = None
+                state = aircraft.state_at(emit_time)
 
                 projected = path.project_ecef(np.asarray(state.position_ecef_m, dtype=float))
                 projected_remaining_m = max(0.0, float(path.total_length_m) - float(projected["distance_m"]))
-                if guidance_command is not None:
-                    distance_to_destination_m = max(0.0, float(guidance_command.distance_to_destination_m))
-                else:
-                    distance_to_destination_m = projected_remaining_m
+                distance_to_destination_m = projected_remaining_m
                 last_distance_to_destination_m = float(distance_to_destination_m)
                 route_progress_pct = 100.0 * np.clip(1.0 - projected_remaining_m / route_length_m, 0.0, 1.0)
 
@@ -330,42 +306,11 @@ class MachCutoffSimulator:
                     effective_mach=effective_mach,
                     source_mach_cutoff=source_mach_cutoff,
                     mach_cutoff=source_mach_cutoff,
-                    guidance=(
-                        GuidanceTelemetry(
-                            mode=guidance_command.mode,
-                            along_track_distance_m=guidance_command.along_track_distance_m,
-                            cross_track_error_m=guidance_command.cross_track_error_m,
-                            distance_to_destination_m=guidance_command.distance_to_destination_m,
-                            desired_heading_deg=guidance_command.desired_heading_deg,
-                            desired_bank_deg=guidance_command.desired_bank_deg,
-                            desired_pitch_deg=guidance_command.desired_pitch_deg,
-                            desired_load_factor=guidance_command.desired_load_factor,
-                            desired_speed_mps=guidance_command.desired_speed_mps,
-                            desired_mach=guidance_command.desired_mach,
-                            desired_body_accel_mps2=np.asarray(guidance_command.desired_body_accel_mps2, dtype=float),
-                            optimizer_cost=guidance_command.optimizer_cost,
-                            predicted_ground_hit_fraction=guidance_command.predicted_ground_hit_fraction,
-                            predicted_source_cutoff_risk=guidance_command.predicted_source_cutoff_risk,
-                            predicted_effective_mach=guidance_command.predicted_effective_mach,
-                            optimizer_altitude_adjustment_m=guidance_command.optimizer_altitude_adjustment_m,
-                            optimizer_mach_adjustment=guidance_command.optimizer_mach_adjustment,
-                        )
-                        if guidance_command is not None
-                        else None
-                    ),
                     rays=[],
                 )
                 snapshot_offset_min = (emit_time - snap_time).total_seconds() / 60.0
                 if source_mach_cutoff:
                     emissions.append(emission_result)
-                    if self.guidance_config.enabled:
-                        guidance_feedback = GuidanceFeedback(
-                            effective_mach=effective_mach,
-                            commanded_mach=float(state.mach),
-                            source_mach_cutoff=True,
-                            ground_hit_fraction=0.0,
-                        )
-                        wind_for_propagation_enu = np.array([float(u0[0]), float(v0[0]), 0.0], dtype=float)
                     print(
                         "[sim] emission "
                         f"{emit_idx}" + (f"/{max_emissions}" if max_emissions is not None else "") + " "
@@ -376,7 +321,6 @@ class MachCutoffSimulator:
                         f"({state.alt_m * 3.28084:8.1f}ft) speed={state.speed_mps:6.1f}m/s "
                         f"({state.speed_mps * 1.943844:6.1f}kt) mach={state.mach:.2f} "
                         f"eff_mach={effective_mach:.3f} | "
-                        f"mode={guidance_command.mode if guidance_command is not None else 'legacy'} | "
                         f"atmo T={float(t0[0]):6.2f}K RH={float(rh0[0]):5.1f}% p={float(p0[0]):7.2f}hPa "
                         f"c={float(c0[0]):6.2f}m/s w_proj={float(w0[0]):+6.2f}m/s c_eff={ce0_scalar:6.2f}m/s | "
                         f"hrrr={snap_time.isoformat()} dt={snapshot_offset_min:+6.2f}m | "
@@ -481,14 +425,6 @@ class MachCutoffSimulator:
                     terminal_alt_min_m = 0.0
                 if not np.isfinite(terminal_alt_max_m):
                     terminal_alt_max_m = 0.0
-                if self.guidance_config.enabled:
-                    guidance_feedback = GuidanceFeedback(
-                        effective_mach=effective_mach,
-                        commanded_mach=float(state.mach),
-                        source_mach_cutoff=False,
-                        ground_hit_fraction=ground_hit_fraction,
-                    )
-                    wind_for_propagation_enu = np.array([float(u0[0]), float(v0[0]), 0.0], dtype=float)
                 print(
                     "[sim] emission "
                     f"{emit_idx}" + (f"/{max_emissions}" if max_emissions is not None else "") + " "
@@ -498,7 +434,6 @@ class MachCutoffSimulator:
                     f"aircraft lat={state.lat_deg:+8.4f} lon={state.lon_deg:+9.4f} alt={state.alt_m:7.1f}m "
                     f"({state.alt_m * 3.28084:8.1f}ft) speed={state.speed_mps:6.1f}m/s "
                     f"({state.speed_mps * 1.943844:6.1f}kt) mach={state.mach:.2f} eff_mach={effective_mach:.3f} | "
-                    f"mode={guidance_command.mode if guidance_command is not None else 'legacy'} | "
                     f"atmo T={float(t0[0]):6.2f}K RH={float(rh0[0]):5.1f}% p={float(p0[0]):7.2f}hPa "
                     f"c={float(c0[0]):6.2f}m/s w_proj={float(w0[0]):+6.2f}m/s c_eff={ce0_scalar:6.2f}m/s | "
                     f"hrrr={snap_time.isoformat()} dt={snapshot_offset_min:+6.2f}m | "

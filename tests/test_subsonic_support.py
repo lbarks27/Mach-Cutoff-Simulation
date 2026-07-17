@@ -6,7 +6,6 @@ import numpy as np
 
 from mach_cutoff.config import ExperimentConfig
 from mach_cutoff.flight.waypoints import FlightPath, Waypoint
-from mach_cutoff.guidance_config import GuidanceConfig
 from mach_cutoff.simulation.engine import MachCutoffSimulator
 
 
@@ -68,28 +67,23 @@ class SubsonicSupportTests(unittest.TestCase):
     def test_subsonic_simulation_skips_shock_generation_and_builds_zero_ray_emission(self):
         start = datetime(2025, 1, 15, 12, 0, tzinfo=timezone.utc)
         end = datetime(2025, 1, 15, 12, 10, tzinfo=timezone.utc)
+        # Short hop over 10 minutes → clearly subsonic from the schedule.
         path = FlightPath(
             [
                 Waypoint(lat_deg=39.8561, lon_deg=-104.6737, alt_m=11_129.6672, time_utc=start),
-                Waypoint(lat_deg=40.7899, lon_deg=-111.9791, alt_m=11_129.6672, time_utc=end),
+                Waypoint(lat_deg=39.8661, lon_deg=-104.6637, alt_m=11_129.6672, time_utc=end),
             ]
         )
 
         cfg = ExperimentConfig()
-        cfg.aircraft.mach = 0.95
+        cfg.aircraft.reference_sound_speed_mps = 340.0
         cfg.runtime.max_emissions = 1
         cfg.visualization.enable_matplotlib = False
         cfg.visualization.enable_plotly = False
         cfg.visualization.enable_pyvista = False
         cfg.population.enabled = False
 
-        guidance_cfg = GuidanceConfig.from_dict(
-            {
-                "enabled": False,
-            }
-        )
-
-        simulator = MachCutoffSimulator(cfg, guidance_config=guidance_cfg)
+        simulator = MachCutoffSimulator(cfg)
 
         with patch("mach_cutoff.simulation.engine.HRRRDatasetManager", _FakeHRRRManager), patch(
             "mach_cutoff.simulation.engine.HRRRInterpolator", _FakeInterpolator

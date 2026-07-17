@@ -22,21 +22,21 @@ This project provides a modular, research-oriented Python simulation for superso
 ## Package layout
 
 - `mach_cutoff/config.py`: configurable experiment model
-- `mach_cutoff/guidance_config.py`: dedicated guidance config model/loader
 - `mach_cutoff/core/constants.py`: physical constants
 - `mach_cutoff/core/geodesy.py`: WGS84 transforms
 - `mach_cutoff/core/raytrace.py`: adaptive ray integrator
 - `mach_cutoff/flight/waypoints.py`: waypoint ingestion and interpolation
-- `mach_cutoff/flight/aircraft.py`: point-mass aircraft + shock ray generation
-- `mach_cutoff/flight/guidance.py`: waypoint guidance + wind-aware dynamics
+- `mach_cutoff/flight/aircraft.py`: open-loop point-mass aircraft + shock ray generation
 - `mach_cutoff/atmosphere/hrrr.py`: HRRR file selection/download/load
 - `mach_cutoff/atmosphere/interpolation.py`: HRRR interpolation
 - `mach_cutoff/atmosphere/acoustics.py`: sound-speed + effective-index field
 - `mach_cutoff/simulation/engine.py`: end-to-end pipeline
 - `mach_cutoff/simulation/population.py`: population heatmap loading + exposure analysis
-- `mach_cutoff/simulation/route_optimizer.py`: iterative rerun optimizer (low-fidelity search + full-fidelity finalists)
+- `mach_cutoff/simulation/route_optimizer.py`: iterative rerun optimizer (low-fidelity path search + full-fidelity finalists)
 - `mach_cutoff/visualization/backends/*`: plotting backends
 - `mach_cutoff/cli.py`: command line entrypoint
+
+This branch is **open-loop only**: the aircraft follows a straight-line path between waypoints and **honors waypoint times** for segment speed (length / Δt → ground speed → Mach via `aircraft.reference_sound_speed_mps`). Live closed-loop guidance (boom avoidance, exposure corridor, mode switching) is intentionally out of scope; a separate MATLAB guidance project can export timed waypoint trajectories for this simulator.
 
 ## Install
 
@@ -70,7 +70,7 @@ python3 -m pip install -e '.[viz]'
 
 ## Waypoint JSON format
 
-Use a JSON array or object with `waypoints` key.
+Use a JSON array or object with `waypoints` key. Times are required and strictly increasing; they set the open-loop speed on each straight segment.
 
 ```json
 {
@@ -81,13 +81,14 @@ Use a JSON array or object with `waypoints` key.
 }
 ```
 
+Segment ground speed is \(\|p_{i+1}-p_i\| / (t_{i+1}-t_i)\). Aircraft Mach for shock generation is that speed divided by `aircraft.reference_sound_speed_mps`. Config `aircraft.mach` is not used for path timing (it may still appear in older configs / benchmark helpers).
+
 ## Run
 
 ```bash
 mach-cutoff \
   --waypoints examples/waypoints_example.json \
   --config examples/config_example.json \
-  --guidance-config examples/guidance_example.json \
   --output-dir outputs
 ```
 
@@ -99,7 +100,6 @@ Or without installing script:
 python3 -m mach_cutoff.cli \
   --waypoints examples/waypoints_example.json \
   --config examples/config_example.json \
-  --guidance-config examples/guidance_example.json \
   --output-dir outputs
 ```
 
@@ -109,7 +109,6 @@ Quick smoke run (validated locally on this machine):
 python3 -m mach_cutoff.cli \
   --waypoints examples/waypoints_example.json \
   --config examples/config_smoke.json \
-  --guidance-config examples/guidance_example.json \
   --output-dir outputs_smoke \
   --no-animation
 ```
@@ -122,7 +121,6 @@ python3 -m mach_cutoff.cli \
 - `--no-animation`
 - `--interactive` (opens live windows for matplotlib/pyvista and opens plotly 3D HTML in browser)
 - `--map-style {topographic,road,satellite}` (switch map/basemap style across visualization outputs)
-- `--guidance-config <path>` (load dedicated guidance dynamics/controller settings)
 - `--optimize-routing` / `--no-optimize-routing` (override `route_optimization.enabled` from config)
 - `--optimizer-*` flags now act as overrides for `route_optimization.*` config values
 
@@ -132,14 +130,13 @@ python3 -m mach_cutoff.cli \
 python3 -m mach_cutoff.cli \
   --waypoints examples/waypoints_msp_dtw.json \
   --config examples/config_population_example.json \
-  --guidance-config examples/guidance_example.json \
   --output-dir outputs_opt
 ```
 
 Behavior:
 
 - Runs repeated low-fidelity sims with deterministic candidate generation.
-- Candidate mutations are phase-aware (`takeoff_climb`, `enroute`, `terminal`) and keep baseline as a failsafe candidate.
+- Candidate mutations are path-only and phase-aware (`takeoff_climb`, `enroute`, `terminal`) around control waypoints. Open-loop flight speed comes from the waypoint time schedule (segment length / segment duration); there is no closed-loop guidance.
 - Objective combines population exposure, ground-reaching boom penalties, speed/time proxy, and optional fuel proxy.
 - Can apply a soft boom-exposure limit (`boom_exposure_limit_people`) so cutoff-aware routes optimize for time while staying below a declared study threshold.
 - Can apply a cutoff target (`min_cutoff_emission_fraction`) so cutoff-aware routes are penalized when too much of the route still produces ground-reaching boom.
@@ -174,26 +171,13 @@ Optimization artifacts are written under `outputs_opt/optimization/`:
 - `low_fidelity_candidates/*`
 - `full_fidelity_finalists/*`
 
-## Guidance config (phase 1)
-
-Guidance is configured separately from the main experiment config to keep control-law iteration isolated.
-
-- Example file: `examples/guidance_example.json`
-- If `--guidance-config` is omitted, built-in defaults are used (guidance still enabled).
-- Loader accepts either a direct object or `{ "guidance": { ... } }`
-- Current mode set includes: `takeoff_climb`, `enroute`, `terminal`, `abort_failsafe`
-- `boom_avoidance.optimizer` enables phase-2 predictive candidate search (Mach/altitude) with configurable risk/cost weights.
-- Guidance feeds back:
-  - effective Mach (`source_mach_cutoff`)
-  - sonic-boom ground-hit fraction from the previous emission
-
 ## Outputs
 
 - `outputs/simulation_summary.json`
 - `outputs/simulation_hits.npz`
 - `outputs/google_earth_overlay.kml` (open in Google Earth for true globe-map overlay)
 - If optimization is enabled: `outputs/optimization/*` with candidate-by-candidate objective traces and route files
-- Summary/NPZ include guidance diagnostics (mode counts, cross-track statistics, command channels, optimizer cost/risk predictions) when guidance is enabled.
+- Summary/NPZ include acoustic telemetry (effective Mach, cutoff flags, ground hits) plus atmospheric series when sampled.
 - If `population.enabled=true`, summary/NPZ include population impact metrics and ranked hit exposure values.
   - Includes separate direct-overflight corridor metrics (`total_overflight_population`, `total_overflight_area_km2`)
 - Visualization files depending on enabled backends
@@ -351,12 +335,12 @@ Default behavior uses hourly analysis snapshots nearest to each emission time.
 
 ## Modeling assumptions (current)
 
-- Aircraft is a point-mass with 3D waypoint guidance and simple wind-aware kinematics.
-- Shock rays are generated as cone-distributed wavefront normals.
+- Aircraft is an open-loop point-mass with **great-circle** waypoint following and **linear altitude** between waypoints (constant altitude when endpoints match); speed comes from the waypoint time schedule (arc length / Δt).
+- Shock rays are generated as cone-distributed wavefront normals when schedule Mach is supersonic.
 - Effective-index field is scalar and uses a configurable wind projection approximation.
 - Atmosphere sampling is nearest-horizontal + linear-vertical interpolation.
 
-These are modular and designed for extension to future guidance/control and repeated multi-trial sweeps.
+These modules support offline route optimization and multi-trial sweeps. Closed-loop guidance is outside this package.
 
 ## Parameter sweeps
 

@@ -15,7 +15,6 @@ import numpy as np
 from ..config import ExperimentConfig
 from ..core.geodesy import geodetic_to_ecef, normalize_lon_deg
 from ..flight.waypoints import FlightPath, Waypoint
-from ..guidance_config import GuidanceConfig
 from .engine import MachCutoffSimulator
 from .outputs import SimulationResult
 
@@ -123,20 +122,14 @@ class _Candidate:
     generation: int
     parent_candidate_id: str | None
     waypoints: list[Waypoint]
-    guidance_config: GuidanceConfig
     phase_mutation_counts: dict[str, int]
     mutated_waypoint_count: int
-    guidance_mutation: dict[str, float]
     low_metrics: ObjectiveMetrics | None = None
     low_score: float | None = None
     mid_metrics: ObjectiveMetrics | None = None
     mid_score: float | None = None
     full_metrics: ObjectiveMetrics | None = None
     full_score: float | None = None
-
-
-def _clone_guidance_config(cfg: GuidanceConfig) -> GuidanceConfig:
-    return GuidanceConfig.from_dict(copy.deepcopy(cfg.to_dict()))
 
 
 def _clone_experiment_config(cfg: ExperimentConfig) -> ExperimentConfig:
@@ -252,15 +245,20 @@ def _expand_waypoints_for_optimization(base_waypoints: list[Waypoint], min_point
     return expanded
 
 
-def _phase_for_waypoint(waypoint: Waypoint, along_m: float, total_m: float, guidance_cfg: GuidanceConfig) -> str:
-    mode_cfg = guidance_cfg.mode_switch
+# Distance-based phase labels for offline route mutation.
+_DEFAULT_TAKEOFF_DISTANCE_M = 80_000.0
+_DEFAULT_TERMINAL_DISTANCE_M = 120_000.0
+_DEFAULT_CLIMB_COMPLETION_ALTITUDE_M = 8_000.0
+_DEFAULT_ALT_LO_M = 1_000.0
+_DEFAULT_ALT_HI_M = 20_000.0
+
+
+def _phase_for_waypoint(waypoint: Waypoint, along_m: float, total_m: float) -> str:
     remaining_m = max(0.0, total_m - along_m)
-    in_takeoff = mode_cfg.enable_takeoff_climb and (
-        along_m <= float(mode_cfg.takeoff_distance_m) or waypoint.alt_m < float(mode_cfg.climb_completion_altitude_m)
-    )
+    in_takeoff = along_m <= _DEFAULT_TAKEOFF_DISTANCE_M or waypoint.alt_m < _DEFAULT_CLIMB_COMPLETION_ALTITUDE_M
     if in_takeoff:
         return "takeoff_climb"
-    if mode_cfg.enable_terminal and remaining_m <= float(mode_cfg.terminal_distance_m):
+    if remaining_m <= _DEFAULT_TERMINAL_DISTANCE_M:
         return "terminal"
     return "enroute"
 
@@ -288,24 +286,28 @@ def _phase_mutation_params(phase: str, total_m: float) -> tuple[float, float, fl
 
 def _mutate_waypoints(
     base_waypoints: list[Waypoint],
-    guidance_cfg: GuidanceConfig,
     rng: np.random.Generator,
+    *,
+    alt_lo: float = _DEFAULT_ALT_LO_M,
+    alt_hi: float = _DEFAULT_ALT_HI_M,
 ) -> tuple[list[Waypoint], dict[str, int], int]:
     if len(base_waypoints) <= 2:
-        return list(base_waypoints), {"takeoff_climb": 0, "enroute": 0, "terminal": 0, "abort_failsafe": 0}, 0
+        return list(base_waypoints), {"takeoff_climb": 0, "enroute": 0, "terminal": 0}, 0
 
-    alt_lo = float(guidance_cfg.constraints.min_altitude_m)
-    alt_hi = float(guidance_cfg.constraints.max_altitude_m)
+    alt_lo = float(alt_lo)
+    alt_hi = float(alt_hi)
+    if alt_hi < alt_lo:
+        alt_lo, alt_hi = alt_hi, alt_lo
     cumulative_m, total_m = _compute_cumulative_lengths_m(base_waypoints)
     waypoints = list(base_waypoints)
 
-    phase_counts = {"takeoff_climb": 0, "enroute": 0, "terminal": 0, "abort_failsafe": 0}
+    phase_counts = {"takeoff_climb": 0, "enroute": 0, "terminal": 0}
     mutated_count = 0
     interior_indices = list(range(1, len(base_waypoints) - 1))
 
     for idx in interior_indices:
         wp = base_waypoints[idx]
-        phase = _phase_for_waypoint(wp, float(cumulative_m[idx]), total_m, guidance_cfg)
+        phase = _phase_for_waypoint(wp, float(cumulative_m[idx]), total_m)
         lateral_max_m, altitude_max_m, mutation_probability = _phase_mutation_params(phase, total_m)
         if float(rng.random()) > mutation_probability:
             continue
@@ -343,7 +345,7 @@ def _mutate_waypoints(
     if mutated_count == 0 and interior_indices:
         idx = int(interior_indices[int(rng.integers(0, len(interior_indices)))])
         wp = base_waypoints[idx]
-        phase = _phase_for_waypoint(wp, float(cumulative_m[idx]), total_m, guidance_cfg)
+        phase = _phase_for_waypoint(wp, float(cumulative_m[idx]), total_m)
         lateral_max_m, altitude_max_m, _ = _phase_mutation_params(phase, total_m)
         new_lat = _clip(wp.lat_deg + float(rng.normal(0.0, lateral_max_m * 0.12)) / _M_PER_DEG, -89.8, 89.8)
         meters_per_lon = max(1.0, _M_PER_DEG * float(np.cos(np.deg2rad(new_lat))))
@@ -354,39 +356,6 @@ def _mutate_waypoints(
         mutated_count = 1
 
     return waypoints, phase_counts, mutated_count
-
-
-def _mutate_guidance(
-    base_guidance: GuidanceConfig,
-    rng: np.random.Generator,
-    settings: RouteOptimizationSettings,
-) -> tuple[GuidanceConfig, dict[str, float]]:
-    cfg = _clone_guidance_config(base_guidance)
-    mutation: dict[str, float] = {}
-    if not cfg.enabled:
-        return cfg, mutation
-
-    min_mach = float(cfg.speed.min_mach)
-    max_mach = float(cfg.speed.max_mach)
-    current_target = float(cfg.speed.target_mach)
-    slower_bias = 0.0
-    if settings.min_cutoff_emission_fraction is not None:
-        slower_bias += 0.05
-    slower_bias += 0.012 * float(min(settings.weight_total_ground_hits, 4.0))
-    target_delta = float(rng.normal(-slower_bias, 0.05))
-    if float(rng.random()) < 0.20:
-        target_delta += float(rng.normal(-0.5 * slower_bias, 0.08))
-    target_delta = _clip(target_delta, -0.20, 0.12)
-    new_target = _clip(current_target + target_delta, min_mach, max_mach)
-    cfg.speed.target_mach = float(new_target)
-    mutation["target_mach_delta"] = float(new_target - current_target)
-
-    effective_target = float(cfg.speed.effective_mach_target)
-    effective_delta = _clip(float(rng.normal(-0.35 * slower_bias, 0.03)), -0.10, 0.08)
-    new_effective_target = _clip(effective_target + effective_delta, 0.95, new_target)
-    cfg.speed.effective_mach_target = float(new_effective_target)
-    mutation["effective_mach_target_delta"] = float(new_effective_target - effective_target)
-    return cfg, mutation
 
 
 def _estimate_required_low_fidelity_emissions(flight_path: FlightPath, emission_interval_s: float) -> int:
@@ -518,14 +487,13 @@ def _compute_metrics(
     mean_speed_mps = total_distance_m / max(total_time_s, 1e-6)
     route_distance_km = total_distance_m / 1000.0
 
+    # Open-loop path-follow reaches the route end; remaining distance is zero on success.
     distance_to_destination_m = 0.0
+    if result.emissions:
+        last = result.emissions[-1]
+        projected = flight_path.project_ecef(np.asarray(last.aircraft_position_ecef_m, dtype=float))
+        distance_to_destination_m = max(0.0, float(flight_path.total_length_m) - float(projected["distance_m"]))
     abort_samples = 0
-    for emission in result.emissions:
-        if emission.guidance is None:
-            continue
-        if emission.guidance.mode == "abort_failsafe":
-            abort_samples += 1
-        distance_to_destination_m = float(emission.guidance.distance_to_destination_m)
 
     path_time_proxy_s = float(flight_path.total_length_m / max(mean_speed_mps, 1.0))
     remaining_time_proxy_s = float(distance_to_destination_m / max(mean_speed_mps, 1.0))
@@ -812,7 +780,7 @@ def _write_waypoints_json(path: Path, waypoints: list[Waypoint]):
         json.dump(payload, f, indent=2)
 
 
-def _candidate_signature(waypoints: list[Waypoint], guidance_cfg: GuidanceConfig) -> tuple[float, ...]:
+def _candidate_signature(waypoints: list[Waypoint]) -> tuple[float, ...]:
     values: list[float] = []
     for wp in waypoints:
         values.extend(
@@ -822,8 +790,6 @@ def _candidate_signature(waypoints: list[Waypoint], guidance_cfg: GuidanceConfig
                 round(float(wp.alt_m), 1),
             ]
         )
-    values.append(round(float(guidance_cfg.speed.target_mach), 4))
-    values.append(round(float(guidance_cfg.speed.effective_mach_target), 4))
     return tuple(values)
 
 
@@ -834,7 +800,7 @@ def _evaluate_candidate(
     settings: RouteOptimizationSettings,
 ) -> tuple[SimulationResult, ObjectiveMetrics]:
     path = FlightPath(candidate.waypoints)
-    simulator = MachCutoffSimulator(sim_cfg, guidance_config=candidate.guidance_config)
+    simulator = MachCutoffSimulator(sim_cfg)
     result = simulator.run(path)
     metrics = _compute_metrics(result, path, sim_cfg, settings)
     return result, metrics
@@ -849,10 +815,6 @@ def _candidate_to_history_row(candidate: _Candidate, low_dir: Path, full_dir: Pa
         "phase_takeoff_climb_mutations": int(candidate.phase_mutation_counts.get("takeoff_climb", 0)),
         "phase_enroute_mutations": int(candidate.phase_mutation_counts.get("enroute", 0)),
         "phase_terminal_mutations": int(candidate.phase_mutation_counts.get("terminal", 0)),
-        "phase_abort_failsafe_mutations": int(candidate.phase_mutation_counts.get("abort_failsafe", 0)),
-        "guidance_target_mach_delta": float(candidate.guidance_mutation.get("target_mach_delta", 0.0)),
-        "guidance_effective_target_delta": float(candidate.guidance_mutation.get("effective_mach_target_delta", 0.0)),
-        "guidance_target_mach": float(candidate.guidance_config.speed.target_mach),
         "low_score": float(candidate.low_score) if candidate.low_score is not None else None,
         "mid_score": float(candidate.mid_score) if candidate.mid_score is not None else None,
         "full_score": float(candidate.full_score) if candidate.full_score is not None else None,
@@ -886,7 +848,6 @@ def optimize_route_with_reruns(
     *,
     flight_path: FlightPath,
     config: ExperimentConfig,
-    guidance_config: GuidanceConfig,
     output_dir: str | Path,
     settings: RouteOptimizationSettings | None = None,
 ) -> RouteOptimizationOutcome:
@@ -954,15 +915,22 @@ def optimize_route_with_reruns(
     full_dir.mkdir(parents=True, exist_ok=True)
 
     control_waypoints = _expand_waypoints_for_optimization(list(flight_path.waypoints), settings.min_control_waypoints)
+    alt_lo = min(float(wp.alt_m) for wp in control_waypoints)
+    alt_hi = max(float(wp.alt_m) for wp in control_waypoints)
+    # Allow modest altitude exploration around the prescribed route envelope.
+    alt_lo = max(_DEFAULT_ALT_LO_M, alt_lo - 2_000.0)
+    alt_hi = max(alt_lo + 500.0, alt_hi + 2_000.0)
+    cruise_alt = float(config.aircraft.constant_altitude_m)
+    alt_lo = min(alt_lo, max(_DEFAULT_ALT_LO_M, cruise_alt - 2_000.0))
+    alt_hi = max(alt_hi, cruise_alt + 2_000.0)
+
     baseline_candidate = _Candidate(
         candidate_id="cand_0000_baseline",
         generation=0,
         parent_candidate_id=None,
         waypoints=control_waypoints,
-        guidance_config=_clone_guidance_config(guidance_config),
-        phase_mutation_counts={"takeoff_climb": 0, "enroute": 0, "terminal": 0, "abort_failsafe": 0},
+        phase_mutation_counts={"takeoff_climb": 0, "enroute": 0, "terminal": 0},
         mutated_waypoint_count=0,
-        guidance_mutation={},
     )
 
     print("[opt] evaluating low-fidelity baseline candidate")
@@ -986,7 +954,7 @@ def optimize_route_with_reruns(
         )
 
     candidates: list[_Candidate] = [baseline_candidate]
-    signatures = {_candidate_signature(baseline_candidate.waypoints, baseline_candidate.guidance_config)}
+    signatures = {_candidate_signature(baseline_candidate.waypoints)}
     generation = 0
     stop_reason = "wall_clock_budget_reached"
 
@@ -1010,11 +978,11 @@ def optimize_route_with_reruns(
             for _attempt in range(settings.max_duplicate_attempts):
                 mutated_waypoints, phase_counts, mutated_count = _mutate_waypoints(
                     parent.waypoints,
-                    parent.guidance_config,
                     rng,
+                    alt_lo=alt_lo,
+                    alt_hi=alt_hi,
                 )
-                mutated_guidance, guidance_mutation = _mutate_guidance(parent.guidance_config, rng, settings)
-                signature = _candidate_signature(mutated_waypoints, mutated_guidance)
+                signature = _candidate_signature(mutated_waypoints)
                 if signature in signatures:
                     continue
                 signatures.add(signature)
@@ -1025,10 +993,8 @@ def optimize_route_with_reruns(
                     generation=generation,
                     parent_candidate_id=parent.candidate_id,
                     waypoints=mutated_waypoints,
-                    guidance_config=mutated_guidance,
                     phase_mutation_counts=phase_counts,
                     mutated_waypoint_count=int(mutated_count),
-                    guidance_mutation=guidance_mutation,
                 )
                 break
 

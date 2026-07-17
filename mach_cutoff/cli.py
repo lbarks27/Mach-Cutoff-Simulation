@@ -7,7 +7,6 @@ from pathlib import Path
 
 from .config import load_config
 from .flight.waypoints import FlightPath, load_waypoints_json
-from .guidance_config import load_guidance_config
 from .simulation.engine import MachCutoffSimulator
 from .simulation.route_optimizer import (
     RouteOptimizationSettings,
@@ -25,7 +24,6 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Mach cutoff simulation")
     parser.add_argument("--waypoints", required=True, help="Path to waypoint JSON")
     parser.add_argument("--config", default=None, help="Path to config JSON")
-    parser.add_argument("--guidance-config", default=None, help="Path to guidance config JSON")
     parser.add_argument("--output-dir", default=None, help="Output directory override")
     parser.add_argument(
         "--map-style",
@@ -109,7 +107,6 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     cfg = load_config(args.config)
-    guidance_cfg = load_guidance_config(args.guidance_config)
     if args.output_dir is not None:
         cfg.visualization.output_dir = args.output_dir
     if args.map_style is not None:
@@ -190,7 +187,6 @@ def main(argv=None):
         optimization_outcome = optimize_route_with_reruns(
             flight_path=flight_path,
             config=cfg,
-            guidance_config=guidance_cfg,
             output_dir=output_dir,
             settings=optimization_settings,
         )
@@ -199,7 +195,7 @@ def main(argv=None):
         print(f"[done] optimized route:      {optimization_outcome.optimized_waypoints_path}")
         print(f"[done] selected candidate:   {optimization_outcome.best_candidate_id}")
     else:
-        simulator = MachCutoffSimulator(cfg, guidance_config=guidance_cfg)
+        simulator = MachCutoffSimulator(cfg)
         result = simulator.run_from_waypoint_file(args.waypoints)
 
     summary_path = output_dir / "simulation_summary.json"

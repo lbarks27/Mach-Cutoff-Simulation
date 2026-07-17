@@ -39,7 +39,6 @@ class BenchmarkScenarioTests(unittest.TestCase):
   "name": "base_manifest",
   "output_root": "../outputs/base",
   "base_config_path": "../examples/base_config.json",
-  "base_guidance_config_path": "../examples/base_guidance.json",
   "population_cache_dir": "../cache/population",
   "gpw": {
     "raw_cache_dir": "../cache/raw",
@@ -81,11 +80,9 @@ class BenchmarkScenarioTests(unittest.TestCase):
   },
   "route_classes": {
     "fastest": {
-      "guidance_overrides": {
-        "boom_avoidance": {
-          "optimizer": {
-            "enabled": false
-          }
+      "config_overrides": {
+        "route_optimization": {
+          "weight_fuel": 0.1
         }
       }
     },
@@ -108,23 +105,10 @@ class BenchmarkScenarioTests(unittest.TestCase):
             self.assertIn("fastest", cfg.route_classes)
             self.assertIn("subsonic_fastest", cfg.route_classes)
             self.assertEqual(cfg.route_classes["fastest"].config_overrides["route_optimization"]["weight_speed"], 4.0)
-            self.assertFalse(
-                cfg.route_classes["fastest"].guidance_overrides["boom_avoidance"]["optimizer"]["enabled"]
-            )
+            self.assertEqual(cfg.route_classes["fastest"].config_overrides["route_optimization"]["weight_fuel"], 0.1)
             self.assertEqual(cfg.route_classes["subsonic_fastest"].config_overrides["aircraft"]["mach"], 0.95)
             self.assertTrue(str(cfg.base_config_path).endswith("/examples/base_config.json"))
             self.assertTrue(str(cfg.output_root).endswith("/outputs/child"))
-
-    def test_xb1_threshold_manifest_loads_with_expected_matrix(self):
-        cfg = load_benchmark_config("results/configs/benchmark_xb1_custom_visual_limit100k_20260413.json")
-        scenarios = build_core_scenarios(cfg)
-        self.assertEqual(len(scenarios), 36)
-        self.assertEqual(len(cfg.route_classes), 4)
-        self.assertEqual(len(cfg.sensitivity_profiles), 16)
-        self.assertEqual(cfg.research_objectives.boom_exposure_limit_people, 100000.0)
-        self.assertIn("subsonic_fastest", cfg.route_classes)
-        self.assertIn("performance_speed_limited", cfg.sensitivity_profiles)
-        self.assertIn("exposure_limit_300k", cfg.sensitivity_profiles)
 
 
 if __name__ == "__main__":
